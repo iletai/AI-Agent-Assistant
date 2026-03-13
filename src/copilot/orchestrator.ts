@@ -2,12 +2,12 @@ import { approveAll, type CopilotClient, type CopilotSession } from "@github/cop
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
-    deleteState,
-    getMemorySummary,
-    getRecentConversation,
-    getState,
-    logConversation,
-    setState,
+	deleteState,
+	getMemorySummary,
+	getRecentConversation,
+	getState,
+	logConversation,
+	setState,
 } from "../store/db.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
@@ -15,8 +15,8 @@ import { getSkillDirectories } from "./skills.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
 import { createTools, type WorkerInfo } from "./tools.js";
 
-const MAX_RETRIES = 3;
-const RECONNECT_DELAYS_MS = [1_000, 3_000, 10_000];
+const MAX_RETRIES = 2;
+const RECONNECT_DELAYS_MS = [1_000, 5_000];
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
 const ORCHESTRATOR_SESSION_KEY = "orchestrator_session_id";
@@ -251,7 +251,9 @@ export async function initOrchestrator(client: CopilotClient): Promise<void> {
 		const configured = config.copilotModel;
 		const isAvailable = models.some((m) => m.id === configured);
 		if (!isAvailable) {
-			console.log(`[nzb] Warning: Configured model '${configured}' is not available. Falling back to '${DEFAULT_MODEL}'.`);
+			console.log(
+				`[nzb] Warning: Configured model '${configured}' is not available. Falling back to '${DEFAULT_MODEL}'.`,
+			);
 			config.copilotModel = DEFAULT_MODEL;
 		}
 	} catch (err) {
@@ -279,7 +281,11 @@ export async function initOrchestrator(client: CopilotClient): Promise<void> {
 }
 
 /** Send a prompt on the persistent session, return the response. */
-async function executeOnSession(prompt: string, callback: MessageCallback, onToolEvent?: ToolEventCallback): Promise<string> {
+async function executeOnSession(
+	prompt: string,
+	callback: MessageCallback,
+	onToolEvent?: ToolEventCallback,
+): Promise<string> {
 	const session = await ensureOrchestratorSession();
 	currentCallback = callback;
 
@@ -306,7 +312,7 @@ async function executeOnSession(prompt: string, callback: MessageCallback, onToo
 	});
 
 	try {
-		const result = await session.sendAndWait({ prompt }, 300_000);
+		const result = await session.sendAndWait({ prompt }, 120_000);
 		const finalContent = result?.data?.content || accumulated || "(No response)";
 		return finalContent;
 	} catch (err) {

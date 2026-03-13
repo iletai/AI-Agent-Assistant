@@ -10,6 +10,21 @@ import { chunkMessage, toTelegramMarkdown } from "./formatter.js";
 let bot: Bot | undefined;
 const startedAt = Date.now();
 
+/**
+ * Strip proxy env vars that would route Telegram API calls through a corporate proxy.
+ * Must be called before creating the Bot instance.
+ */
+function clearProxyEnvForTelegram(): void {
+	const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"];
+	const hadProxy = proxyKeys.some((k) => !!process.env[k]);
+	for (const key of proxyKeys) {
+		delete process.env[key];
+	}
+	if (hadProxy) {
+		console.log("[nzb] Cleared proxy env vars (HTTP_PROXY/HTTPS_PROXY) to allow direct Telegram API access");
+	}
+}
+
 export function createBot(): Bot {
 	if (!config.telegramBotToken) {
 		throw new Error("Telegram bot token is missing. Run 'nzb setup' and enter the bot token from @BotFather.");
@@ -19,12 +34,17 @@ export function createBot(): Bot {
 			"Telegram user ID is missing. Run 'nzb setup' and enter your Telegram user ID (get it from @userinfobot).",
 		);
 	}
+
+	// Clear proxy env vars so grammy connects directly to api.telegram.org
+	clearProxyEnvForTelegram();
+
 	bot = new Bot(config.telegramBotToken);
 
 	// Auth middleware — only allow the authorized user
 	bot.use(async (ctx, next) => {
 		if (config.authorizedUserId !== undefined && ctx.from?.id !== config.authorizedUserId) {
-			return; // Silently ignore unauthorized users
+			console.log(`[nzb] Telegram auth rejected: user ${ctx.from?.id} (authorized: ${config.authorizedUserId})`);
+			return;
 		}
 		await next();
 	});
@@ -111,7 +131,8 @@ export function createBot(): Bot {
 		const hours = Math.floor(uptime / 3600);
 		const minutes = Math.floor((uptime % 3600) / 60);
 		const seconds = uptime % 60;
-		const uptimeStr = hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+		const uptimeStr =
+			hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 		const workers = Array.from(getWorkers().values());
 		const lines = [
 			"📊 NZB Status",
@@ -178,26 +199,32 @@ export function createBot(): Bot {
 
 		const enqueueEdit = (text: string) => {
 			if (finalized || text === lastEditedText) return;
-			editChain = editChain.then(async () => {
-				if (finalized || text === lastEditedText) return;
-				if (!placeholderMsgId) {
-					// Let the typing indicator show for at least a short period
-					const elapsed = Date.now() - handlerStartTime;
-					if (elapsed < FIRST_PLACEHOLDER_DELAY_MS) {
-						await new Promise((r) => setTimeout(r, FIRST_PLACEHOLDER_DELAY_MS - elapsed));
-					}
-					if (finalized) return;
-					try {
+			editChain = editChain
+				.then(async () => {
+					if (finalized || text === lastEditedText) return;
+					if (!placeholderMsgId) {
+						// Let the typing indicator show for at least a short period
+						const elapsed = Date.now() - handlerStartTime;
+						if (elapsed < FIRST_PLACEHOLDER_DELAY_MS) {
+							await new Promise((r) => setTimeout(r, FIRST_PLACEHOLDER_DELAY_MS - elapsed));
+						}
+						if (finalized) return;
+						try {
 							const msg = await ctx.reply(text, { reply_parameters: replyParams });
 							placeholderMsgId = msg.message_id;
-						} catch { return; }
-				} else {
-					try {
-						await bot!.api.editMessageText(chatId, placeholderMsgId, text);
-					} catch { return; }
-				}
-				lastEditedText = text;
-			}).catch(() => {});
+						} catch {
+							return;
+						}
+					} else {
+						try {
+							await bot!.api.editMessageText(chatId, placeholderMsgId, text);
+						} catch {
+							return;
+						}
+					}
+					lastEditedText = text;
+				})
+				.catch(() => {});
 		};
 
 		const onToolEvent: ToolEventCallback = (event) => {
@@ -232,13 +259,19 @@ export function createBot(): Bot {
 								try {
 									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0]);
 									return;
-								} catch { /* fall through to send new messages */ }
+								} catch {
+									/* fall through to send new messages */
+								}
 							}
 						}
 
 						// Multi-chunk or no placeholder: delete placeholder and send chunks
 						if (placeholderMsgId) {
-							try { await bot!.api.deleteMessage(chatId, placeholderMsgId); } catch { /* ignore */ }
+							try {
+								await bot!.api.deleteMessage(chatId, placeholderMsgId);
+							} catch {
+								/* ignore */
+							}
 						}
 						const sendChunk = async (chunk: string, fallback: string, isFirst: boolean) => {
 							const opts = isFirst
@@ -257,7 +290,9 @@ export function createBot(): Bot {
 								for (let i = 0; i < fallbackChunks.length; i++) {
 									await ctx.reply(fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
 								}
-							} catch { /* nothing more we can do */ }
+							} catch {
+								/* nothing more we can do */
+							}
 						}
 					});
 				} else {

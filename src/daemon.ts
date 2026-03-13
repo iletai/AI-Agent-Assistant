@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { existsSync } from "fs";
 import { broadcastToSSE, startApiServer } from "./api/server.js";
 import { config } from "./config.js";
 import { getClient, stopClient } from "./copilot/client.js";
@@ -6,6 +7,16 @@ import { getWorkers, initOrchestrator, setMessageLogger, setProactiveNotify } fr
 import { closeDb, getDb } from "./store/db.js";
 import { createBot, sendProactiveMessage, startBot, stopBot } from "./telegram/bot.js";
 import { checkForUpdate } from "./update.js";
+
+// Auto-detect system CA bundle for corporate environments with TLS inspection.
+// NODE_EXTRA_CA_CERTS must be set before any TLS connection is made.
+if (!process.env.NODE_EXTRA_CA_CERTS) {
+	const systemCaBundle = "/etc/ssl/certs/ca-certificates.crt";
+	if (existsSync(systemCaBundle)) {
+		process.env.NODE_EXTRA_CA_CERTS = systemCaBundle;
+		console.log(`[nzb] Using system CA bundle: ${systemCaBundle}`);
+	}
+}
 
 function truncate(text: string, max = 200): string {
 	const oneLine = text.replace(/\n/g, " ").trim();

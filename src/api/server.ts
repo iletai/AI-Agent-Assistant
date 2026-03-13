@@ -30,7 +30,7 @@ app.use(express.json());
 
 // Bearer token authentication middleware (skip /status health check)
 app.use((req: Request, res: Response, next: NextFunction) => {
-	if (!apiToken || req.path === "/status" || req.path === "/send-photo") return next();
+	if (!apiToken || req.path === "/status") return next();
 	const auth = req.headers.authorization;
 	if (!auth || auth !== `Bearer ${apiToken}`) {
 		res.status(401).json({ error: "Unauthorized" });

@@ -1,9 +1,9 @@
 {
-  "name": "copilot-sdk",
-  "source": "github-awesome-copilot",
-  "description": "Build agentic applications with GitHub Copilot SDK.",
-  "description_ja": "",
-  "whenToUse": "Embed Copilot's agentic workflows in any application using Python, TypeScript, Go, or .NET.",
-  "categories": [],
-  "installedAt": "2026-03-12T17:52:10.749Z"
+	"name": "copilot-sdk",
+	"source": "github-awesome-copilot",
+	"description": "Build agentic applications with GitHub Copilot SDK.",
+	"description_ja": "",
+	"whenToUse": "Embed Copilot's agentic workflows in any application using Python, TypeScript, Go, or .NET.",
+	"categories": [],
+	"installedAt": "2026-03-12T17:52:10.749Z"
 }
