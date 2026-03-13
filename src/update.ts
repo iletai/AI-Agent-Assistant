@@ -5,12 +5,14 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const PKG_NAME = "@iletai/nzb";
+
 function getPackageJson(): { name: string; version: string } {
 	try {
 		const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
-		return { name: pkg.name || "nzb", version: pkg.version || "0.0.0" };
+		return { name: pkg.name || PKG_NAME, version: pkg.version || "0.0.0" };
 	} catch {
-		return { name: "nzb", version: "0.0.0" };
+		return { name: PKG_NAME, version: "0.0.0" };
 	}
 }
 
