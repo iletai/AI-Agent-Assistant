@@ -5,6 +5,9 @@
 	"bin": {
 		"nzb": "dist/cli.js"
 	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"files": [
 		"dist/**/*.js",
 		"scripts/fix-esm-imports.cjs",

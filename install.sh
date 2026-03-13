@@ -82,9 +82,18 @@ if [ "$DEV_MODE" = true ]; then
   echo ""
   node dist/setup.js < /dev/tty
 else
-  info "Installing nzb..."
+  info "Installing nzb from npm..."
   npm install -g nzb
   echo ""
+
+  # Verify installation
+  if ! command -v nzb &>/dev/null; then
+    error "✗ Installation failed — 'nzb' command not found."
+    echo "  The npm global bin directory may not be in your PATH."
+    echo "  Try: export PATH=\"\$(npm prefix -g)/bin:\$PATH\""
+    exit 1
+  fi
+
   success "✅ NZB installed successfully!"
   echo ""
   info "Let's get NZB configured..."
