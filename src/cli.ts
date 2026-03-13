@@ -1,10 +1,30 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Auto-detect system CA bundle for corporate environments with TLS inspection.
+// NODE_EXTRA_CA_CERTS must be set BEFORE the Node.js process starts — setting it
+// at runtime via process.env does NOT work for Node.js 24's fetch() (undici).
+// When missing, we re-exec the current process with the env var set.
+if (!process.env.NODE_EXTRA_CA_CERTS && !process.env.__NZB_CA_INJECTED) {
+	const found = [
+		"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+		"/etc/pki/tls/certs/ca-bundle.crt", // RHEL/CentOS/Fedora
+		"/etc/ssl/cert.pem", // macOS / Alpine
+	].find((p) => existsSync(p));
+	if (found) {
+		const result = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+			stdio: "inherit",
+			env: { ...process.env, NODE_EXTRA_CA_CERTS: found, __NZB_CA_INJECTED: "1" },
+		});
+		process.exit(result.status ?? 1);
+	}
+}
 
 function getVersion(): string {
 	try {

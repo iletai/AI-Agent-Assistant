@@ -1,5 +1,4 @@
 import { spawn } from "child_process";
-import { existsSync } from "fs";
 import { broadcastToSSE, startApiServer } from "./api/server.js";
 import { config } from "./config.js";
 import { getClient, stopClient } from "./copilot/client.js";
@@ -8,20 +7,9 @@ import { closeDb, getDb } from "./store/db.js";
 import { createBot, sendProactiveMessage, startBot, stopBot } from "./telegram/bot.js";
 import { checkForUpdate } from "./update.js";
 
-// Auto-detect system CA bundle for corporate environments with TLS inspection.
-// NODE_EXTRA_CA_CERTS must be set before any TLS connection is made.
-// Users can override via NODE_EXTRA_CA_CERTS env var or NODE_EXTRA_CA_CERTS in ~/.nzb/.env.
-if (!process.env.NODE_EXTRA_CA_CERTS) {
-	const knownCaBundles = [
-		"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
-		"/etc/pki/tls/certs/ca-bundle.crt", // RHEL/CentOS/Fedora
-		"/etc/ssl/cert.pem", // macOS / Alpine
-	];
-	const found = knownCaBundles.find((p) => existsSync(p));
-	if (found) {
-		process.env.NODE_EXTRA_CA_CERTS = found;
-		console.log(`[nzb] Auto-detected system CA bundle: ${found}`);
-	}
+// Log the active CA bundle (injected by cli.ts via re-exec).
+if (process.env.NODE_EXTRA_CA_CERTS) {
+	console.log(`[nzb] Using system CA bundle: ${process.env.NODE_EXTRA_CA_CERTS}`);
 }
 
 function truncate(text: string, max = 200): string {
