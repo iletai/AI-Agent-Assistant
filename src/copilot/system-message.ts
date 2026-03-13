@@ -1,4 +1,7 @@
-export function getOrchestratorSystemMessage(memorySummary?: string, opts?: { selfEditEnabled?: boolean }): string {
+export function getOrchestratorSystemMessage(
+	memorySummary?: string,
+	opts?: { selfEditEnabled?: boolean; currentModel?: string },
+): string {
 	const memoryBlock = memorySummary
 		? `\n## Long-Term Memory\nThese are things you've been asked to remember or have noted as important:\n\n${memorySummary}\n`
 		: "";
@@ -19,8 +22,9 @@ This restriction does NOT apply to:
 `;
 
 	const osName = process.platform === "darwin" ? "macOS" : process.platform === "win32" ? "Windows" : "Linux";
+	const modelInfo = opts?.currentModel ? ` You are currently using the \`${opts.currentModel}\` model.` : "";
 
-	return `You are NZB, a personal AI assistant for developers running 24/7 on the user's machine (${osName}). You are the user's always-on assistant.
+	return `You are NZB, a personal AI assistant for developers running 24/7 on the user's machine (${osName}).${modelInfo} You are the user's always-on assistant.
 
 ## Your Architecture
 

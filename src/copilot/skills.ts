@@ -1,6 +1,6 @@
-import { readdirSync, readFileSync, mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
-import { join, dirname } from "path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
+import { dirname, join, resolve, sep } from "path";
 import { fileURLToPath } from "url";
 import { SKILLS_DIR } from "../paths.js";
 
@@ -13,13 +13,21 @@ const GLOBAL_SKILLS_DIR = join(homedir(), ".agents", "skills");
 /** Skills bundled with the NZB package (e.g. find-skills) */
 const BUNDLED_SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
 
-/** Returns all skill directories that exist on disk. */
+let cachedSkillDirs: string[] | undefined;
+
+/** Returns all skill directories that exist on disk. Cached after first call. */
 export function getSkillDirectories(): string[] {
+	if (cachedSkillDirs) return cachedSkillDirs;
 	const dirs: string[] = [];
 	if (existsSync(BUNDLED_SKILLS_DIR)) dirs.push(BUNDLED_SKILLS_DIR);
 	if (existsSync(LOCAL_SKILLS_DIR)) dirs.push(LOCAL_SKILLS_DIR);
 	if (existsSync(GLOBAL_SKILLS_DIR)) dirs.push(GLOBAL_SKILLS_DIR);
+	cachedSkillDirs = dirs;
 	return dirs;
+}
+
+export function clearSkillDirsCache(): void {
+	cachedSkillDirs = undefined;
 }
 
 export interface SkillInfo {
@@ -81,8 +89,10 @@ export function listSkills(): SkillInfo[] {
 /** Create a new skill in the local skills directory. */
 export function createSkill(slug: string, name: string, description: string, instructions: string): string {
 	const skillDir = join(LOCAL_SKILLS_DIR, slug);
-	// Guard against path traversal
-	if (!skillDir.startsWith(LOCAL_SKILLS_DIR + "/")) {
+	// Guard against path traversal — resolve to canonical path and verify it stays inside skills dir
+	const resolvedSkillDir = resolve(skillDir);
+	const resolvedBase = resolve(LOCAL_SKILLS_DIR);
+	if (!resolvedSkillDir.startsWith(resolvedBase + sep)) {
 		return `Invalid slug '${slug}': must be a simple kebab-case name without path separators.`;
 	}
 	if (existsSync(skillDir)) {
@@ -102,14 +112,17 @@ ${instructions}
 `;
 	writeFileSync(join(skillDir, "SKILL.md"), skillMd);
 
+	clearSkillDirsCache();
 	return `Skill '${name}' created at ${skillDir}. It will be available on your next message.`;
 }
 
 /** Remove a skill from the local skills directory (~/.nzb/skills/). */
 export function removeSkill(slug: string): { ok: boolean; message: string } {
 	const skillDir = join(LOCAL_SKILLS_DIR, slug);
-	// Guard against path traversal
-	if (!skillDir.startsWith(LOCAL_SKILLS_DIR + "/")) {
+	// Guard against path traversal — resolve to canonical path and verify it stays inside skills dir
+	const resolvedSkillDir = resolve(skillDir);
+	const resolvedBase = resolve(LOCAL_SKILLS_DIR);
+	if (!resolvedSkillDir.startsWith(resolvedBase + sep)) {
 		return { ok: false, message: `Invalid slug '${slug}': must be a simple kebab-case name without path separators.` };
 	}
 	if (!existsSync(skillDir)) {
@@ -117,6 +130,7 @@ export function removeSkill(slug: string): { ok: boolean; message: string } {
 	}
 
 	rmSync(skillDir, { recursive: true, force: true });
+	clearSkillDirsCache();
 	return {
 		ok: true,
 		message: `Skill '${slug}' removed from ${skillDir}. It will no longer be available on your next message.`,

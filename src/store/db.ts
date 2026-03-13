@@ -1,8 +1,23 @@
+import type { Statement } from "better-sqlite3";
 import Database from "better-sqlite3";
 import { DB_PATH, ensureNZBHome } from "../paths.js";
 
 let db: Database.Database | undefined;
 let logInsertCount = 0;
+
+// Cached prepared statements for hot-path queries (created lazily after DB init)
+let stmtCache:
+	| {
+			getState: Statement;
+			setState: Statement;
+			deleteState: Statement;
+			logConversation: Statement;
+			pruneConversation: Statement;
+			addMemory: Statement;
+			removeMemory: Statement;
+			memorySummary: Statement;
+	  }
+	| undefined;
 
 export function getDb(): Database.Database {
 	if (!db) {
@@ -73,37 +88,49 @@ export function getDb(): Database.Database {
 		db.prepare(
 			`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`,
 		).run();
+
+		// Initialize cached prepared statements for hot-path operations
+		stmtCache = {
+			getState: db.prepare(`SELECT value FROM nzb_state WHERE key = ?`),
+			setState: db.prepare(`INSERT OR REPLACE INTO nzb_state (key, value) VALUES (?, ?)`),
+			deleteState: db.prepare(`DELETE FROM nzb_state WHERE key = ?`),
+			logConversation: db.prepare(`INSERT INTO conversation_log (role, content, source) VALUES (?, ?, ?)`),
+			pruneConversation: db.prepare(
+				`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`,
+			),
+			addMemory: db.prepare(`INSERT INTO memories (category, content, source) VALUES (?, ?, ?)`),
+			removeMemory: db.prepare(`DELETE FROM memories WHERE id = ?`),
+			memorySummary: db.prepare(`SELECT id, category, content FROM memories ORDER BY category, last_accessed DESC`),
+		};
 	}
 	return db;
 }
 
 export function getState(key: string): string | undefined {
-	const db = getDb();
-	const row = db.prepare(`SELECT value FROM nzb_state WHERE key = ?`).get(key) as { value: string } | undefined;
+	getDb(); // ensure init
+	const row = stmtCache!.getState.get(key) as { value: string } | undefined;
 	return row?.value;
 }
 
 export function setState(key: string, value: string): void {
-	const db = getDb();
-	db.prepare(`INSERT OR REPLACE INTO nzb_state (key, value) VALUES (?, ?)`).run(key, value);
+	getDb(); // ensure init
+	stmtCache!.setState.run(key, value);
 }
 
 /** Remove a key from persistent state. */
 export function deleteState(key: string): void {
-	const db = getDb();
-	db.prepare(`DELETE FROM nzb_state WHERE key = ?`).run(key);
+	getDb(); // ensure init
+	stmtCache!.deleteState.run(key);
 }
 
 /** Log a conversation turn (user, assistant, or system). */
 export function logConversation(role: "user" | "assistant" | "system", content: string, source: string): void {
-	const db = getDb();
-	db.prepare(`INSERT INTO conversation_log (role, content, source) VALUES (?, ?, ?)`).run(role, content, source);
+	getDb(); // ensure init
+	stmtCache!.logConversation.run(role, content, source);
 	// Keep last 200 entries to support context recovery after session loss
 	logInsertCount++;
 	if (logInsertCount % 50 === 0) {
-		db.prepare(
-			`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`,
-		).run();
+		stmtCache!.pruneConversation.run();
 	}
 }
 
@@ -135,10 +162,8 @@ export function addMemory(
 	content: string,
 	source: "user" | "auto" = "user",
 ): number {
-	const db = getDb();
-	const result = db
-		.prepare(`INSERT INTO memories (category, content, source) VALUES (?, ?, ?)`)
-		.run(category, content, source);
+	getDb(); // ensure init
+	const result = stmtCache!.addMemory.run(category, content, source);
 	return result.lastInsertRowid as number;
 }
 
@@ -183,15 +208,15 @@ export function searchMemories(
 
 /** Remove a memory by ID. */
 export function removeMemory(id: number): boolean {
-	const db = getDb();
-	const result = db.prepare(`DELETE FROM memories WHERE id = ?`).run(id);
+	getDb(); // ensure init
+	const result = stmtCache!.removeMemory.run(id);
 	return result.changes > 0;
 }
 
 /** Get a compact summary of all memories for injection into system message. */
 export function getMemorySummary(): string {
-	const db = getDb();
-	const rows = db.prepare(`SELECT id, category, content FROM memories ORDER BY category, last_accessed DESC`).all() as {
+	getDb(); // ensure init
+	const rows = stmtCache!.memorySummary.all() as {
 		id: number;
 		category: string;
 		content: string;
@@ -216,6 +241,7 @@ export function getMemorySummary(): string {
 
 export function closeDb(): void {
 	if (db) {
+		stmtCache = undefined;
 		db.close();
 		db = undefined;
 	}

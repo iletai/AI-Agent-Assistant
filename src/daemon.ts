@@ -2,9 +2,16 @@ import { spawn } from "child_process";
 import { broadcastToSSE, startApiServer } from "./api/server.js";
 import { config } from "./config.js";
 import { getClient, stopClient } from "./copilot/client.js";
-import { getWorkers, initOrchestrator, setMessageLogger, setProactiveNotify } from "./copilot/orchestrator.js";
+import {
+	getWorkers,
+	initOrchestrator,
+	setMessageLogger,
+	setProactiveNotify,
+	setWorkerNotify,
+	stopHealthCheck,
+} from "./copilot/orchestrator.js";
 import { closeDb, getDb } from "./store/db.js";
-import { createBot, sendProactiveMessage, startBot, stopBot } from "./telegram/bot.js";
+import { createBot, sendProactiveMessage, sendWorkerNotification, startBot, stopBot } from "./telegram/bot.js";
 import { checkForUpdate } from "./update.js";
 
 // Log the active CA bundle (injected by cli.ts via re-exec).
@@ -52,6 +59,32 @@ async function main(): Promise<void> {
 		}
 		if (!channel || channel === "tui") {
 			broadcastToSSE(text);
+		}
+	});
+
+	// Wire up worker lifecycle notifications
+	setWorkerNotify((event, channel) => {
+		let msg: string;
+		switch (event.type) {
+			case "created":
+				msg = `⚙️ Worker '${event.name}' created in ${event.workingDir}`;
+				break;
+			case "dispatched":
+				msg = `▶️ Worker '${event.name}' started working...`;
+				break;
+			case "completed":
+				msg = `✅ Worker '${event.name}' finished`;
+				break;
+			case "error":
+				msg = `❌ Worker '${event.name}' failed: ${event.error}`;
+				break;
+		}
+		console.log(`[nzb] worker-event (${channel ?? "all"}) ${msg}`);
+		if (!channel || channel === "telegram") {
+			if (config.telegramEnabled) sendWorkerNotification(msg).catch(() => {});
+		}
+		if (!channel || channel === "tui") {
+			broadcastToSSE(msg);
 		}
 	});
 
@@ -123,6 +156,9 @@ async function shutdown(): Promise<void> {
 	}, 3000);
 	forceTimer.unref();
 
+	// Stop health check timer first
+	stopHealthCheck();
+
 	if (config.telegramEnabled) {
 		try {
 			await stopBot();
@@ -148,6 +184,8 @@ async function shutdown(): Promise<void> {
 /** Restart the daemon by spawning a new process and exiting. */
 export async function restartDaemon(): Promise<void> {
 	console.log("[nzb] Restarting...");
+
+	stopHealthCheck();
 
 	const activeWorkers = getWorkers();
 	const runningCount = Array.from(activeWorkers.values()).filter((w) => w.status === "running").length;

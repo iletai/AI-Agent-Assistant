@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistModel } from "../config.js";
 import type { ToolEventCallback } from "../copilot/orchestrator.js";
@@ -10,6 +10,17 @@ import { chunkMessage, toTelegramMarkdown } from "./formatter.js";
 
 let bot: Bot | undefined;
 const startedAt = Date.now();
+
+// Inline keyboard menu for quick actions
+const mainMenu = new InlineKeyboard()
+	.text("📊 Status", "action:status")
+	.text("🤖 Model", "action:model")
+	.row()
+	.text("👥 Workers", "action:workers")
+	.text("🧠 Skills", "action:skills")
+	.row()
+	.text("🗂 Memory", "action:memory")
+	.text("❌ Cancel", "action:cancel");
 
 // Direct-connection HTTPS agent for Telegram API requests.
 // This bypasses corporate proxy (HTTP_PROXY/HTTPS_PROXY env vars) without
@@ -44,8 +55,10 @@ export function createBot(): Bot {
 		await next();
 	});
 
-	// /start and /help
-	bot.command("start", (ctx) => ctx.reply("NZB is online. Send me anything."));
+	// /start and /help — with inline menu
+	bot.command("start", (ctx) =>
+		ctx.reply("NZB is online. Send me anything, or use the menu below:", { reply_markup: mainMenu }),
+	);
 	bot.command("help", (ctx) =>
 		ctx.reply(
 			"I'm NZB, your AI daemon.\n\n" +
@@ -60,6 +73,7 @@ export function createBot(): Bot {
 				"/status — Show system status\n" +
 				"/restart — Restart NZB\n" +
 				"/help — Show this help",
+			{ reply_markup: mainMenu },
 		),
 	);
 	bot.command("cancel", async (ctx) => {
@@ -147,6 +161,65 @@ export function createBot(): Bot {
 		}, 500);
 	});
 
+	// Callback query handlers for inline menu buttons
+	bot.callbackQuery("action:status", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const uptime = Math.floor((Date.now() - startedAt) / 1000);
+		const hours = Math.floor(uptime / 3600);
+		const minutes = Math.floor((uptime % 3600) / 60);
+		const seconds = uptime % 60;
+		const uptimeStr =
+			hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+		const workers = Array.from(getWorkers().values());
+		const lines = [
+			"📊 NZB Status",
+			`Model: ${config.copilotModel}`,
+			`Uptime: ${uptimeStr}`,
+			`Workers: ${workers.length} active`,
+			`Queue: ${getQueueSize()} pending`,
+		];
+		await ctx.reply(lines.join("\n"));
+	});
+	bot.callbackQuery("action:model", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		await ctx.reply(`Current model: ${config.copilotModel}`);
+	});
+	bot.callbackQuery("action:workers", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const workers = Array.from(getWorkers().values());
+		if (workers.length === 0) {
+			await ctx.reply("No active worker sessions.");
+		} else {
+			const lines = workers.map((w) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
+			await ctx.reply(lines.join("\n"));
+		}
+	});
+	bot.callbackQuery("action:skills", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const skills = listSkills();
+		if (skills.length === 0) {
+			await ctx.reply("No skills installed.");
+		} else {
+			const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
+			await ctx.reply(lines.join("\n"));
+		}
+	});
+	bot.callbackQuery("action:memory", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const memories = searchMemories(undefined, undefined, 50);
+		if (memories.length === 0) {
+			await ctx.reply("No memories stored.");
+		} else {
+			const lines = memories.map((m) => `#${m.id} [${m.category}] ${m.content}`);
+			await ctx.reply(lines.join("\n") + `\n\n${memories.length} total`);
+		}
+	});
+	bot.callbackQuery("action:cancel", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const cancelled = await cancelCurrentMessage();
+		await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
+	});
+
 	// Handle all text messages — progressive streaming with tool event feedback
 	bot.on("message:text", async (ctx) => {
 		const chatId = ctx.chat.id;
@@ -187,7 +260,9 @@ export function createBot(): Bot {
 		let currentToolName: string | undefined;
 		let finalized = false;
 		let editChain = Promise.resolve();
-		const EDIT_INTERVAL_MS = 3000;
+		const EDIT_INTERVAL_MS = 5000;
+		// Minimum character delta before sending an edit — avoids wasting API calls on tiny changes
+		const MIN_EDIT_DELTA = 100;
 		// Minimum time before showing the first placeholder, so user sees "typing" first
 		const FIRST_PLACEHOLDER_DELAY_MS = 1500;
 		const handlerStartTime = Date.now();
@@ -207,6 +282,8 @@ export function createBot(): Bot {
 						try {
 							const msg = await ctx.reply(text, { reply_parameters: replyParams });
 							placeholderMsgId = msg.message_id;
+							// Stop typing once placeholder is visible — edits serve as the indicator now
+							stopTyping();
 						} catch {
 							return;
 						}
@@ -232,6 +309,18 @@ export function createBot(): Bot {
 			}
 		};
 
+		// Notify user if their message is queued behind others
+		const queueSize = getQueueSize();
+		if (queueSize > 0) {
+			try {
+				await ctx.reply(`\u23f3 Queued (position ${queueSize + 1}) — I'll get to your message shortly.`, {
+					reply_parameters: replyParams,
+				});
+			} catch {
+				/* best-effort */
+			}
+		}
+
 		sendToOrchestrator(
 			ctx.message.text,
 			{ type: "telegram", chatId, messageId: userMessageId },
@@ -241,6 +330,26 @@ export function createBot(): Bot {
 					stopTyping();
 					// Wait for in-flight edits to finish before sending the final response
 					void editChain.then(async () => {
+						// Format error messages with a distinct visual
+						const isError = text.startsWith("Error:");
+						if (isError) {
+							const errorText = `⚠️ ${text}`;
+							if (placeholderMsgId) {
+								try {
+									await bot!.api.editMessageText(chatId, placeholderMsgId, errorText);
+									return;
+								} catch {
+									/* fall through */
+								}
+							}
+							try {
+								await ctx.reply(errorText, { reply_parameters: replyParams });
+							} catch {
+								/* nothing more we can do */
+							}
+							return;
+						}
+
 						const formatted = toTelegramMarkdown(text);
 						const chunks = chunkMessage(formatted);
 						const fallbackChunks = chunkMessage(text);
@@ -268,22 +377,29 @@ export function createBot(): Bot {
 								/* ignore */
 							}
 						}
-						const sendChunk = async (chunk: string, fallback: string, isFirst: boolean) => {
+						const totalChunks = chunks.length;
+						const sendChunk = async (chunk: string, fallback: string, index: number) => {
+							const isFirst = index === 0;
+							// Pagination header for multi-chunk messages
+							const pageTag = totalChunks > 1 ? `📄 ${index + 1}/${totalChunks}\n` : "";
 							const opts = isFirst
 								? { parse_mode: "MarkdownV2" as const, reply_parameters: replyParams }
 								: { parse_mode: "MarkdownV2" as const };
 							await ctx
-								.reply(chunk, opts)
-								.catch(() => ctx.reply(fallback, isFirst ? { reply_parameters: replyParams } : {}));
+								.reply(pageTag + chunk, opts)
+								.catch(() => ctx.reply(pageTag + fallback, isFirst ? { reply_parameters: replyParams } : {}));
 						};
 						try {
 							for (let i = 0; i < chunks.length; i++) {
-								await sendChunk(chunks[i], fallbackChunks[i] ?? chunks[i], i === 0);
+								if (i > 0) await new Promise((r) => setTimeout(r, 300));
+								await sendChunk(chunks[i], fallbackChunks[i] ?? chunks[i], i);
 							}
 						} catch {
 							try {
 								for (let i = 0; i < fallbackChunks.length; i++) {
-									await ctx.reply(fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
+									if (i > 0) await new Promise((r) => setTimeout(r, 300));
+									const pageTag = fallbackChunks.length > 1 ? `📄 ${i + 1}/${fallbackChunks.length}\n` : "";
+									await ctx.reply(pageTag + fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
 								}
 							} catch {
 								/* nothing more we can do */
@@ -291,11 +407,18 @@ export function createBot(): Bot {
 						}
 					});
 				} else {
-					// Progressive streaming: update placeholder periodically
+					// Progressive streaming: update placeholder periodically with delta threshold
 					const now = Date.now();
-					if (now - lastEditTime >= EDIT_INTERVAL_MS) {
+					const textDelta = Math.abs(text.length - lastEditedText.length);
+					if (now - lastEditTime >= EDIT_INTERVAL_MS && textDelta >= MIN_EDIT_DELTA) {
 						lastEditTime = now;
-						const preview = text.length > 4000 ? "…" + text.slice(-4000) : text;
+						// Show beginning + end for context instead of just the tail
+						let preview: string;
+						if (text.length > 4000) {
+							preview = text.slice(0, 1800) + "\n\n⋯\n\n" + text.slice(-1800);
+						} else {
+							preview = text;
+						}
 						const statusLine = currentToolName ? `🔧 ${currentToolName}\n\n` : "";
 						enqueueEdit(statusLine + preview);
 					}
@@ -311,6 +434,25 @@ export function createBot(): Bot {
 export async function startBot(): Promise<void> {
 	if (!bot) throw new Error("Bot not created");
 	console.log("[nzb] Telegram bot starting...");
+
+	// Register commands with Telegram so users see the menu in the text input field
+	try {
+		await bot.api.setMyCommands([
+			{ command: "start", description: "Start the bot" },
+			{ command: "help", description: "Show help text" },
+			{ command: "cancel", description: "Cancel current message" },
+			{ command: "model", description: "Show/switch AI model" },
+			{ command: "status", description: "Show system status" },
+			{ command: "workers", description: "List active workers" },
+			{ command: "skills", description: "List installed skills" },
+			{ command: "memory", description: "Show stored memories" },
+			{ command: "restart", description: "Restart NZB" },
+		]);
+		console.log("[nzb] Bot commands registered with Telegram");
+	} catch (err) {
+		console.error("[nzb] Failed to register bot commands:", err instanceof Error ? err.message : err);
+	}
+
 	bot
 		.start({
 			onStart: () => console.log("[nzb] Telegram bot connected"),
@@ -343,15 +485,27 @@ export async function sendProactiveMessage(text: string): Promise<void> {
 	const chunks = chunkMessage(formatted);
 	const fallbackChunks = chunkMessage(text);
 	for (let i = 0; i < chunks.length; i++) {
+		if (i > 0) await new Promise((r) => setTimeout(r, 300));
+		const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
 		try {
-			await bot.api.sendMessage(config.authorizedUserId, chunks[i], { parse_mode: "MarkdownV2" });
+			await bot.api.sendMessage(config.authorizedUserId, pageTag + chunks[i], { parse_mode: "MarkdownV2" });
 		} catch {
 			try {
-				await bot.api.sendMessage(config.authorizedUserId, fallbackChunks[i] ?? chunks[i]);
+				await bot.api.sendMessage(config.authorizedUserId, pageTag + (fallbackChunks[i] ?? chunks[i]));
 			} catch {
 				// Bot may not be connected yet
 			}
 		}
+	}
+}
+
+/** Send a worker lifecycle notification to the authorized user. */
+export async function sendWorkerNotification(message: string): Promise<void> {
+	if (!bot || config.authorizedUserId === undefined) return;
+	try {
+		await bot.api.sendMessage(config.authorizedUserId, message);
+	} catch {
+		// best-effort — don't crash if notification fails
 	}
 }
 

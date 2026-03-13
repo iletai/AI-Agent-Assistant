@@ -51,10 +51,17 @@ export interface WorkerInfo {
 	originChannel?: "telegram" | "tui";
 }
 
+export type WorkerEvent =
+	| { type: "created"; name: string; workingDir: string }
+	| { type: "dispatched"; name: string }
+	| { type: "completed"; name: string }
+	| { type: "error"; name: string; error: string };
+
 export interface ToolDeps {
 	client: CopilotClient;
 	workers: Map<string, WorkerInfo>;
 	onWorkerComplete: (name: string, result: string) => void;
+	onWorkerEvent?: (event: WorkerEvent) => void;
 }
 
 export function createTools(deps: ToolDeps): Tool<any>[] {
@@ -88,12 +95,18 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					return `Worker limit reached (${MAX_CONCURRENT_WORKERS}). Active: ${names}. Kill a session first.`;
 				}
 
-				const session = await deps.client.createSession({
-					model: config.copilotModel,
-					configDir: SESSIONS_DIR,
-					workingDirectory: args.working_dir,
-					onPermissionRequest: approveAll,
-				});
+				let session;
+				try {
+					session = await deps.client.createSession({
+						model: config.copilotModel,
+						configDir: SESSIONS_DIR,
+						workingDirectory: args.working_dir,
+						onPermissionRequest: approveAll,
+					});
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return `Failed to create worker session '${args.name}': ${msg}`;
+				}
 
 				const worker: WorkerInfo = {
 					name: args.name,
@@ -103,6 +116,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					originChannel: getCurrentSourceChannel(),
 				};
 				deps.workers.set(args.name, worker);
+				deps.onWorkerEvent?.({ type: "created", name: args.name, workingDir: args.working_dir });
 
 				// Persist to SQLite
 				const db = getDb();
@@ -117,6 +131,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					db.prepare(
 						`UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`,
 					).run(args.name);
+					deps.onWorkerEvent?.({ type: "dispatched", name: args.name });
 
 					const timeoutMs = config.workerTimeoutMs;
 					// Non-blocking: dispatch work and return immediately
@@ -129,18 +144,27 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 						)
 						.then((result) => {
 							worker.lastOutput = result?.data?.content || "No response";
+							deps.onWorkerEvent?.({ type: "completed", name: args.name });
 							deps.onWorkerComplete(args.name, worker.lastOutput);
 						})
 						.catch((err) => {
 							const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
 							worker.lastOutput = errMsg;
+							deps.onWorkerEvent?.({ type: "error", name: args.name, error: errMsg });
 							deps.onWorkerComplete(args.name, errMsg);
 						})
 						.finally(() => {
 							// Auto-destroy background workers after completion to free memory (~400MB per worker)
 							session.destroy().catch(() => {});
 							deps.workers.delete(args.name);
-							getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
+							try {
+								getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
+							} catch (cleanupErr) {
+								console.error(
+									`[nzb] Worker '${args.name}' DB cleanup failed:`,
+									cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+								);
+							}
 						});
 
 					return `Worker '${args.name}' created in ${args.working_dir}. Task dispatched — I'll notify you when it's done.`;
@@ -173,6 +197,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				db.prepare(`UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`).run(
 					args.name,
 				);
+				deps.onWorkerEvent?.({ type: "dispatched", name: args.name });
 
 				const timeoutMs = config.workerTimeoutMs;
 				// Non-blocking: dispatch work and return immediately
@@ -180,18 +205,27 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					.sendAndWait({ prompt: args.prompt }, timeoutMs)
 					.then((result) => {
 						worker.lastOutput = result?.data?.content || "No response";
+						deps.onWorkerEvent?.({ type: "completed", name: args.name });
 						deps.onWorkerComplete(args.name, worker.lastOutput);
 					})
 					.catch((err) => {
 						const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
 						worker.lastOutput = errMsg;
+						deps.onWorkerEvent?.({ type: "error", name: args.name, error: errMsg });
 						deps.onWorkerComplete(args.name, errMsg);
 					})
 					.finally(() => {
 						// Auto-destroy after each send_to_worker dispatch to free memory
 						worker.session.destroy().catch(() => {});
 						deps.workers.delete(args.name);
-						getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
+						try {
+							getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
+						} catch (cleanupErr) {
+							console.error(
+								`[nzb] Worker '${args.name}' DB cleanup failed:`,
+								cleanupErr instanceof Error ? cleanupErr.message : cleanupErr,
+							);
+						}
 					});
 
 				return `Task dispatched to worker '${args.name}'. I'll notify you when it's done.`;

@@ -1,8 +1,11 @@
 const TELEGRAM_MAX_LENGTH = 4096;
+// Reserve space for code block closure markers and pagination prefix
+const CHUNK_TARGET = TELEGRAM_MAX_LENGTH - 20;
 
 /**
  * Split a long message into chunks that fit within Telegram's message limit.
- * Tries to split at newlines, then spaces, falling back to hard cuts.
+ * Code-block-aware: if a split falls inside a fenced code block, the block is
+ * closed at the split and reopened in the next chunk so MarkdownV2 stays valid.
  */
 export function chunkMessage(text: string): string[] {
 	if (text.length <= TELEGRAM_MAX_LENGTH) {
@@ -18,16 +21,27 @@ export function chunkMessage(text: string): string[] {
 			break;
 		}
 
-		let splitAt = remaining.lastIndexOf("\n", TELEGRAM_MAX_LENGTH);
-		if (splitAt < TELEGRAM_MAX_LENGTH * 0.3) {
-			splitAt = remaining.lastIndexOf(" ", TELEGRAM_MAX_LENGTH);
+		let splitAt = remaining.lastIndexOf("\n", CHUNK_TARGET);
+		if (splitAt < CHUNK_TARGET * 0.3) {
+			splitAt = remaining.lastIndexOf(" ", CHUNK_TARGET);
 		}
-		if (splitAt < TELEGRAM_MAX_LENGTH * 0.3) {
-			splitAt = TELEGRAM_MAX_LENGTH;
+		if (splitAt < CHUNK_TARGET * 0.3) {
+			splitAt = CHUNK_TARGET;
 		}
 
-		chunks.push(remaining.slice(0, splitAt));
-		remaining = remaining.slice(splitAt).trimStart();
+		const segment = remaining.slice(0, splitAt);
+
+		// Count ``` markers — odd means we're splitting inside a code block
+		const markers = segment.match(/```/g);
+		const insideCodeBlock = markers !== null && markers.length % 2 !== 0;
+
+		if (insideCodeBlock) {
+			chunks.push(segment + "\n```");
+			remaining = "```\n" + remaining.slice(splitAt).trimStart();
+		} else {
+			chunks.push(segment);
+			remaining = remaining.slice(splitAt).trimStart();
+		}
 	}
 
 	return chunks;

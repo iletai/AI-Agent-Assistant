@@ -2,6 +2,9 @@ import { CopilotClient } from "@github/copilot-sdk";
 
 let client: CopilotClient | undefined;
 
+/** Coalesces concurrent resetClient() calls into a single reset operation. */
+let pendingResetPromise: Promise<CopilotClient> | undefined;
+
 export async function getClient(): Promise<CopilotClient> {
 	if (!client) {
 		client = new CopilotClient({
@@ -13,17 +16,27 @@ export async function getClient(): Promise<CopilotClient> {
 	return client;
 }
 
-/** Tear down the existing client and create a fresh one. */
+/** Tear down the existing client and create a fresh one. Concurrent calls coalesce to a single reset. */
 export async function resetClient(): Promise<CopilotClient> {
-	if (client) {
-		try {
-			await client.stop();
-		} catch {
-			/* best-effort */
+	if (pendingResetPromise) return pendingResetPromise;
+
+	pendingResetPromise = (async () => {
+		if (client) {
+			try {
+				await client.stop();
+			} catch {
+				/* best-effort */
+			}
+			client = undefined;
 		}
-		client = undefined;
+		return getClient();
+	})();
+
+	try {
+		return await pendingResetPromise;
+	} finally {
+		pendingResetPromise = undefined;
 	}
-	return getClient();
 }
 
 export async function stopClient(): Promise<void> {

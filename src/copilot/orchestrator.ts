@@ -13,7 +13,7 @@ import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
 import { getSkillDirectories } from "./skills.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
-import { createTools, type WorkerInfo } from "./tools.js";
+import { createTools, type WorkerEvent, type WorkerInfo } from "./tools.js";
 
 const MAX_RETRIES = 2;
 const RECONNECT_DELAYS_MS = [1_000, 5_000];
@@ -50,6 +50,14 @@ export function setProactiveNotify(fn: ProactiveNotifyFn): void {
 	proactiveNotifyFn = fn;
 }
 
+// Worker lifecycle notification — sends worker status changes to the appropriate channel
+type WorkerNotifyFn = (event: WorkerEvent, channel?: "telegram" | "tui") => void;
+let workerNotifyFn: WorkerNotifyFn | undefined;
+
+export function setWorkerNotify(fn: WorkerNotifyFn): void {
+	workerNotifyFn = fn;
+}
+
 let copilotClient: CopilotClient | undefined;
 const workers = new Map<string, WorkerInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
@@ -84,6 +92,13 @@ function getSessionConfig() {
 		client: copilotClient!,
 		workers,
 		onWorkerComplete: feedBackgroundResult,
+		onWorkerEvent: (event) => {
+			const worker = workers.get(event.name);
+			const channel = worker?.originChannel ?? currentSourceChannel;
+			if (workerNotifyFn) {
+				workerNotifyFn(event, channel);
+			}
+		},
 	});
 	const mcpServers = loadMcpConfig();
 	const skillDirectories = getSkillDirectories();
@@ -94,6 +109,7 @@ function getSessionConfig() {
 export function feedBackgroundResult(workerName: string, result: string): void {
 	const worker = workers.get(workerName);
 	const channel = worker?.originChannel;
+	console.log(`[nzb] Feeding background result from worker '${workerName}' (channel: ${channel ?? "none"})`);
 	const prompt = `[Background task completed] Worker '${workerName}' finished:\n\n${result}`;
 	sendToOrchestrator(prompt, { type: "background" }, (_text, done) => {
 		if (done && proactiveNotifyFn) {
@@ -146,6 +162,14 @@ function startHealthCheck(): void {
 	}, HEALTH_CHECK_INTERVAL_MS);
 }
 
+/** Stop the periodic health check timer. Call during shutdown. */
+export function stopHealthCheck(): void {
+	if (healthCheckTimer) {
+		clearInterval(healthCheckTimer);
+		healthCheckTimer = undefined;
+	}
+}
+
 /** Create or resume the persistent orchestrator session. */
 async function ensureOrchestratorSession(): Promise<CopilotSession> {
 	if (orchestratorSession) return orchestratorSession;
@@ -186,6 +210,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 				systemMessage: {
 					content: getOrchestratorSystemMessage(memorySummary || undefined, {
 						selfEditEnabled: config.selfEditEnabled,
+						currentModel: config.copilotModel,
 					}),
 				},
 				tools,
@@ -209,7 +234,10 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 		configDir: SESSIONS_DIR,
 		streaming: true,
 		systemMessage: {
-			content: getOrchestratorSystemMessage(memorySummary || undefined, { selfEditEnabled: config.selfEditEnabled }),
+			content: getOrchestratorSystemMessage(memorySummary || undefined, {
+				selfEditEnabled: config.selfEditEnabled,
+				currentModel: config.copilotModel,
+			}),
 		},
 		tools,
 		mcpServers,
@@ -300,7 +328,7 @@ async function executeOnSession(
 		const toolName = event?.data?.toolName || event?.data?.name || "tool";
 		onToolEvent?.({ type: "tool_complete", toolName });
 	});
-	const unsubDelta = session.on("assistant.message_delta", (event) => {
+	const unsubDelta = session.on("assistant.message_delta", (event: any) => {
 		// After a tool call completes, ensure a line break separates the text blocks
 		// so they don't visually run together in the TUI.
 		if (toolCallExecuted && accumulated.length > 0 && !accumulated.endsWith("\n")) {
@@ -310,14 +338,25 @@ async function executeOnSession(
 		accumulated += event.data.deltaContent;
 		callback(accumulated, false);
 	});
+	const unsubError = session.on("session.error", (event: any) => {
+		const errMsg = event?.data?.message || event?.data?.error || "Unknown session error";
+		console.error(`[nzb] Session error event: ${errMsg}`);
+	});
 
 	try {
 		const result = await session.sendAndWait({ prompt }, 120_000);
 		const finalContent = result?.data?.content || accumulated || "(No response)";
 		return finalContent;
 	} catch (err) {
-		// If the session is broken, invalidate it so it's recreated on next attempt
 		const msg = err instanceof Error ? err.message : String(err);
+
+		// On timeout, deliver whatever was accumulated instead of retrying from scratch
+		if (/timeout/i.test(msg) && accumulated.length > 0) {
+			console.log(`[nzb] Timeout — delivering ${accumulated.length} chars of partial content`);
+			return accumulated + "\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
+		}
+
+		// If the session is broken, invalidate it so it's recreated on next attempt
 		if (/closed|destroy|disposed|invalid|expired|not found/i.test(msg)) {
 			console.log(`[nzb] Session appears dead, will recreate: ${msg}`);
 			orchestratorSession = undefined;
@@ -328,6 +367,7 @@ async function executeOnSession(
 		unsubDelta();
 		unsubToolStart();
 		unsubToolDone();
+		unsubError();
 		currentCallback = undefined;
 	}
 }
@@ -443,6 +483,9 @@ export async function sendToOrchestrator(
 export async function cancelCurrentMessage(): Promise<boolean> {
 	// Drain any queued messages
 	const drained = messageQueue.length;
+	if (drained > 0) {
+		console.log(`[nzb] Cancelling: draining ${drained} queued message(s)`);
+	}
 	while (messageQueue.length > 0) {
 		const item = messageQueue.shift()!;
 		item.reject(new Error("Cancelled"));
