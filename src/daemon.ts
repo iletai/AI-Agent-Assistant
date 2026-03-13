@@ -86,11 +86,14 @@ async function main(): Promise<void> {
 
 	console.log("[nzb] NZB is fully operational.");
 
-	// Non-blocking update check
+	// Non-blocking update check — notify via console + all active channels
 	checkForUpdate()
 		.then(({ updateAvailable, current, latest }) => {
 			if (updateAvailable) {
-				console.log(`[nzb] ⬆ Update available: v${current} → v${latest}  —  run 'nzb update' to install`);
+				const msg = `⬆ Update available: v${current} → v${latest} — run \`nzb update\` to install`;
+				console.log(`[nzb] ${msg}`);
+				if (config.telegramEnabled) sendProactiveMessage(msg).catch(() => {});
+				broadcastToSSE(msg);
 			}
 		})
 		.catch(() => {}); // silent — network may be unavailable

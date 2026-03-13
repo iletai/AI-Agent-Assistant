@@ -1,17 +1,21 @@
-import { readFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
 import { exec as execCb, execSync } from "child_process";
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function getLocalVersion(): string {
+function getPackageJson(): { name: string; version: string } {
 	try {
 		const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
-		return pkg.version || "0.0.0";
+		return { name: pkg.name || "nzb", version: pkg.version || "0.0.0" };
 	} catch {
-		return "0.0.0";
+		return { name: "nzb", version: "0.0.0" };
 	}
+}
+
+function getLocalVersion(): string {
+	return getPackageJson().version;
 }
 
 /** Run a command asynchronously and return stdout. */
@@ -27,7 +31,8 @@ function execAsync(cmd: string, timeoutMs: number): Promise<string> {
 /** Fetch the latest published version from npm. Returns null on failure. */
 export async function getLatestVersion(): Promise<string | null> {
 	try {
-		const result = await execAsync("npm view nzb version", 10_000);
+		const { name } = getPackageJson();
+		const result = await execAsync(`npm view ${name} version`, 10_000);
 		return result || null;
 	} catch {
 		return null;
@@ -64,10 +69,11 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
 	};
 }
 
-/** Run `npm install -g nzb@latest` and return success/failure. */
+/** Run `npm install -g <pkg>@latest` and return success/failure. */
 export async function performUpdate(): Promise<{ ok: boolean; output: string }> {
 	try {
-		const output = execSync("npm install -g nzb@latest", {
+		const { name } = getPackageJson();
+		const output = execSync(`npm install -g ${name}@latest`, {
 			encoding: "utf-8",
 			timeout: 60_000,
 			stdio: ["ignore", "pipe", "pipe"],
