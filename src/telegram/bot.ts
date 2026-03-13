@@ -1,4 +1,5 @@
 import { Bot } from "grammy";
+import { Agent as HttpsAgent } from "https";
 import { config, persistModel } from "../config.js";
 import type { ToolEventCallback } from "../copilot/orchestrator.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers, sendToOrchestrator } from "../copilot/orchestrator.js";
@@ -10,20 +11,10 @@ import { chunkMessage, toTelegramMarkdown } from "./formatter.js";
 let bot: Bot | undefined;
 const startedAt = Date.now();
 
-/**
- * Strip proxy env vars that would route Telegram API calls through a corporate proxy.
- * Must be called before creating the Bot instance.
- */
-function clearProxyEnvForTelegram(): void {
-	const proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"];
-	const hadProxy = proxyKeys.some((k) => !!process.env[k]);
-	for (const key of proxyKeys) {
-		delete process.env[key];
-	}
-	if (hadProxy) {
-		console.log("[nzb] Cleared proxy env vars (HTTP_PROXY/HTTPS_PROXY) to allow direct Telegram API access");
-	}
-}
+// Direct-connection HTTPS agent for Telegram API requests.
+// This bypasses corporate proxy (HTTP_PROXY/HTTPS_PROXY env vars) without
+// modifying process.env, so other services (Copilot SDK, MCP, npm) are unaffected.
+const telegramAgent = new HttpsAgent({ keepAlive: true });
 
 export function createBot(): Bot {
 	if (!config.telegramBotToken) {
@@ -34,11 +25,15 @@ export function createBot(): Bot {
 			"Telegram user ID is missing. Run 'nzb setup' and enter your Telegram user ID (get it from @userinfobot).",
 		);
 	}
-
-	// Clear proxy env vars so grammy connects directly to api.telegram.org
-	clearProxyEnvForTelegram();
-
-	bot = new Bot(config.telegramBotToken);
+	bot = new Bot(config.telegramBotToken, {
+		client: {
+			baseFetchConfig: {
+				agent: telegramAgent,
+				compress: true,
+			},
+		},
+	});
+	console.log("[nzb] Telegram bot using direct HTTPS agent (proxy bypass)");
 
 	// Auth middleware — only allow the authorized user
 	bot.use(async (ctx, next) => {

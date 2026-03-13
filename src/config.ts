@@ -13,9 +13,16 @@ const configSchema = z.object({
 	API_PORT: z.string().optional(),
 	COPILOT_MODEL: z.string().optional(),
 	WORKER_TIMEOUT: z.string().optional(),
+	NODE_EXTRA_CA_CERTS: z.string().optional(),
 });
 
 const raw = configSchema.parse(process.env);
+
+// Apply NODE_EXTRA_CA_CERTS from .env if not already set via environment.
+// This allows corporate users to configure their CA bundle path in ~/.nzb/.env.
+if (raw.NODE_EXTRA_CA_CERTS && !process.env.NODE_EXTRA_CA_CERTS) {
+	process.env.NODE_EXTRA_CA_CERTS = raw.NODE_EXTRA_CA_CERTS;
+}
 
 const parsedUserId = raw.AUTHORIZED_USER_ID ? parseInt(raw.AUTHORIZED_USER_ID, 10) : undefined;
 const parsedPort = parseInt(raw.API_PORT || "7777", 10);

@@ -10,11 +10,17 @@ import { checkForUpdate } from "./update.js";
 
 // Auto-detect system CA bundle for corporate environments with TLS inspection.
 // NODE_EXTRA_CA_CERTS must be set before any TLS connection is made.
+// Users can override via NODE_EXTRA_CA_CERTS env var or NODE_EXTRA_CA_CERTS in ~/.nzb/.env.
 if (!process.env.NODE_EXTRA_CA_CERTS) {
-	const systemCaBundle = "/etc/ssl/certs/ca-certificates.crt";
-	if (existsSync(systemCaBundle)) {
-		process.env.NODE_EXTRA_CA_CERTS = systemCaBundle;
-		console.log(`[nzb] Using system CA bundle: ${systemCaBundle}`);
+	const knownCaBundles = [
+		"/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+		"/etc/pki/tls/certs/ca-bundle.crt", // RHEL/CentOS/Fedora
+		"/etc/ssl/cert.pem", // macOS / Alpine
+	];
+	const found = knownCaBundles.find((p) => existsSync(p));
+	if (found) {
+		process.env.NODE_EXTRA_CA_CERTS = found;
+		console.log(`[nzb] Auto-detected system CA bundle: ${found}`);
 	}
 }
 
