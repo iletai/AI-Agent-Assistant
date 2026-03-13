@@ -83,7 +83,7 @@ if [ "$DEV_MODE" = true ]; then
   node dist/setup.js < /dev/tty
 else
   info "Installing nzb from npm..."
-  npm install -g nzb
+  npm install -g @iletai/nzb
   echo ""
 
   # Verify installation
