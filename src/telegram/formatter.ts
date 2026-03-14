@@ -50,7 +50,7 @@ export function chunkMessage(text: string): string[] {
 /**
  * Escape special characters for Telegram MarkdownV2 plain text segments.
  */
-function escapeSegment(text: string): string {
+export function escapeSegment(text: string): string {
 	return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
 
@@ -181,4 +181,27 @@ export function toTelegramMarkdown(text: string): string {
 	out = out.replace(/\n{3,}/g, "\n\n");
 
 	return out.trim();
+}
+
+/**
+ * Format tool call info as a Telegram MarkdownV2 expandable blockquote.
+ * First line (title) is always visible, tool list expands on tap.
+ */
+export function formatToolSummaryExpandable(toolCalls: { name: string; durationMs?: number }[]): string {
+	if (toolCalls.length === 0) return "";
+
+	const lines = toolCalls.map((t) => {
+		const name = escapeSegment(t.name);
+		const dur =
+			t.durationMs !== undefined
+				? ` \\(${escapeSegment((t.durationMs / 1000).toFixed(1) + "s")}\\)`
+				: "";
+		return `${escapeSegment("• ")}${name}${dur}`;
+	});
+
+	const header = escapeSegment("🔧 Tools used:");
+	const toolList = lines.join(`\n>`);
+
+	// Expandable: header visible, tool list hidden until tapped
+	return `\n\n**>${header}\n>${toolList}||`;
 }

@@ -1,6 +1,7 @@
 # NZB Project Overview
 
 ## Purpose
+
 NZB (package name: `nzb`) is a personal AI assistant daemon for developers, built on the GitHub Copilot SDK. It runs 24/7 on the user's machine and provides an always-on AI assistant experience via:
 
 1. **Telegram Bot** — primary interface; user can message from phone/desktop
@@ -8,7 +9,9 @@ NZB (package name: `nzb`) is a personal AI assistant daemon for developers, buil
 3. **HTTP API** — local REST API on port 7777 for programmatic access
 
 ## Architecture
+
 NZB is structured as a Node.js daemon process that orchestrates:
+
 - A **Copilot SDK client** (`@github/copilot-sdk`) for AI capabilities
 - An **orchestrator** that manages a persistent Copilot session and message queue
 - **Worker sessions** — background Copilot CLI instances spawned for coding tasks
@@ -19,6 +22,7 @@ NZB is structured as a Node.js daemon process that orchestrates:
 - **MCP server integration** — connects to Model Context Protocol tool servers
 
 ## Tech Stack
+
 - **Language**: TypeScript (strict mode, ES2022 target, Node16 module resolution)
 - **Runtime**: Node.js >= 18
 - **Build**: `tsc` (TypeScript compiler)
@@ -33,6 +37,7 @@ NZB is structured as a Node.js daemon process that orchestrates:
 - **Dev tools**: tsx (for dev mode), prettier (formatting), TypeScript ^5.9.3
 
 ## Data Storage
+
 - All user data lives in `~/.nzb/`
   - `nzb.db` — SQLite database
   - `.env` — user configuration
@@ -43,6 +48,7 @@ NZB is structured as a Node.js daemon process that orchestrates:
   - `tui-debug.log` — optional debug log
 
 ## Configuration (Environment Variables)
+
 - `TELEGRAM_BOT_TOKEN` — Telegram bot token from @BotFather
 - `AUTHORIZED_USER_ID` — Telegram user ID for auth
 - `API_PORT` — HTTP API port (default: 7777)
@@ -53,6 +59,7 @@ NZB is structured as a Node.js daemon process that orchestrates:
 - `MAX_API_URL` — override API base URL for TUI
 
 ## Repository
-- GitHub: https://github.com/iletai/AI-Agent-Assistant
+
+- GitHub: <https://github.com/iletai/AI-Agent-Assistant>
 - Author: iletai
 - License: MIT

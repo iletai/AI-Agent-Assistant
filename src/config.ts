@@ -13,6 +13,7 @@ const configSchema = z.object({
 	API_PORT: z.string().optional(),
 	COPILOT_MODEL: z.string().optional(),
 	WORKER_TIMEOUT: z.string().optional(),
+	SHOW_REASONING: z.string().optional(),
 	NODE_EXTRA_CA_CERTS: z.string().optional(),
 });
 
@@ -62,26 +63,36 @@ export const config = {
 	get selfEditEnabled(): boolean {
 		return process.env.NZB_SELF_EDIT === "1";
 	},
+	get showReasoning(): boolean {
+		return process.env.SHOW_REASONING === "true";
+	},
+	set showReasoning(value: boolean) {
+		process.env.SHOW_REASONING = value ? "true" : "false";
+	},
 };
 
-/** Persist the current model choice to ~/.nzb/.env */
-export function persistModel(model: string): void {
+/** Persist an env variable to ~/.nzb/.env */
+export function persistEnvVar(key: string, value: string): void {
 	ensureNZBHome();
 	try {
 		const content = readFileSync(ENV_PATH, "utf-8");
 		const lines = content.split("\n");
 		let found = false;
 		const updated = lines.map((line) => {
-			if (line.startsWith("COPILOT_MODEL=")) {
+			if (line.startsWith(`${key}=`)) {
 				found = true;
-				return `COPILOT_MODEL=${model}`;
+				return `${key}=${value}`;
 			}
 			return line;
 		});
-		if (!found) updated.push(`COPILOT_MODEL=${model}`);
+		if (!found) updated.push(`${key}=${value}`);
 		writeFileSync(ENV_PATH, updated.join("\n"));
 	} catch {
-		// File doesn't exist — create it
-		writeFileSync(ENV_PATH, `COPILOT_MODEL=${model}\n`);
+		writeFileSync(ENV_PATH, `${key}=${value}\n`);
 	}
+}
+
+/** Persist the current model choice to ~/.nzb/.env */
+export function persistModel(model: string): void {
+	persistEnvVar("COPILOT_MODEL", model);
 }

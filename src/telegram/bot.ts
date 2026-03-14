@@ -1,12 +1,13 @@
+import { appendFileSync } from "fs";
 import { Bot, InlineKeyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
-import { config, persistModel } from "../config.js";
+import { config, persistEnvVar, persistModel } from "../config.js";
 import type { ToolEventCallback } from "../copilot/orchestrator.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers, sendToOrchestrator } from "../copilot/orchestrator.js";
 import { listSkills } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { searchMemories } from "../store/db.js";
-import { chunkMessage, toTelegramMarkdown } from "./formatter.js";
+import { chunkMessage, formatToolSummaryExpandable, toTelegramMarkdown } from "./formatter.js";
 
 let bot: Bot | undefined;
 const startedAt = Date.now();
@@ -20,6 +21,8 @@ const mainMenu = new InlineKeyboard()
 	.text("🧠 Skills", "action:skills")
 	.row()
 	.text("🗂 Memory", "action:memory")
+	.text("⚙️ Settings", "action:settings")
+	.row()
 	.text("❌ Cancel", "action:cancel");
 
 // Direct-connection HTTPS agent for Telegram API requests.
@@ -71,6 +74,7 @@ export function createBot(): Bot {
 				"/skills — List installed skills\n" +
 				"/workers — List active worker sessions\n" +
 				"/status — Show system status\n" +
+				"/settings — Bot settings\n" +
 				"/restart — Restart NZB\n" +
 				"/help — Show this help",
 			{ reply_markup: mainMenu },
@@ -161,6 +165,24 @@ export function createBot(): Bot {
 		}, 500);
 	});
 
+	// /settings — show toggleable settings with inline keyboard
+	const buildSettingsKeyboard = () =>
+		new InlineKeyboard()
+			.text(`${config.showReasoning ? "✅" : "❌"} Show Reasoning`, "setting:toggle:reasoning")
+			.row()
+			.text("🔙 Back to Menu", "action:menu");
+
+	const buildSettingsText = () =>
+		"⚙️ Settings\n\n" +
+		`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n` +
+		`  └ Hiển thị tools đã dùng + thời gian cuối mỗi phản hồi\n\n` +
+		`🤖 Model: ${config.copilotModel}\n` +
+		`  └ Dùng /model <name> để đổi`;
+
+	bot.command("settings", async (ctx) => {
+		await ctx.reply(buildSettingsText(), { reply_markup: buildSettingsKeyboard() });
+	});
+
 	// Callback query handlers for inline menu buttons
 	bot.callbackQuery("action:status", async (ctx) => {
 		await ctx.answerCallbackQuery();
@@ -219,6 +241,20 @@ export function createBot(): Bot {
 		const cancelled = await cancelCurrentMessage();
 		await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
 	});
+	bot.callbackQuery("action:settings", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		await ctx.reply(buildSettingsText(), { reply_markup: buildSettingsKeyboard() });
+	});
+	bot.callbackQuery("action:menu", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		await ctx.editMessageText("NZB Menu:", { reply_markup: mainMenu });
+	});
+	bot.callbackQuery("setting:toggle:reasoning", async (ctx) => {
+		config.showReasoning = !config.showReasoning;
+		persistEnvVar("SHOW_REASONING", config.showReasoning ? "true" : "false");
+		await ctx.answerCallbackQuery(`Reasoning ${config.showReasoning ? "ON" : "OFF"}`);
+		await ctx.editMessageText(buildSettingsText(), { reply_markup: buildSettingsKeyboard() });
+	});
 
 	// Handle all text messages — progressive streaming with tool event feedback
 	bot.on("message:text", async (ctx) => {
@@ -258,6 +294,7 @@ export function createBot(): Bot {
 		let lastEditTime = 0;
 		let lastEditedText = "";
 		let currentToolName: string | undefined;
+		const toolHistory: { name: string; startTime: number; durationMs?: number }[] = [];
 		let finalized = false;
 		let editChain = Promise.resolve();
 		const EDIT_INTERVAL_MS = 5000;
@@ -300,11 +337,20 @@ export function createBot(): Bot {
 		};
 
 		const onToolEvent: ToolEventCallback = (event) => {
+			try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} BOT ${event.type} ${event.toolName}\n`); } catch {}
+			console.log(`[nzb] Bot received tool event: ${event.type} ${event.toolName}`);
 			if (event.type === "tool_start") {
 				currentToolName = event.toolName;
+				toolHistory.push({ name: event.toolName, startTime: Date.now() });
 				const existingText = lastEditedText.replace(/^🔧 .*\n\n/, "");
 				enqueueEdit(`🔧 ${event.toolName}\n\n${existingText}`.trim() || `🔧 ${event.toolName}`);
 			} else if (event.type === "tool_complete") {
+				for (let i = toolHistory.length - 1; i >= 0; i--) {
+					if (toolHistory[i].name === event.toolName && toolHistory[i].durationMs === undefined) {
+						toolHistory[i].durationMs = Date.now() - toolHistory[i].startTime;
+						break;
+					}
+				}
 				currentToolName = undefined;
 			}
 		};
@@ -351,7 +397,17 @@ export function createBot(): Bot {
 						}
 
 						const formatted = toTelegramMarkdown(text);
-						const chunks = chunkMessage(formatted);
+						let fullFormatted = formatted;
+						try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} FINAL showReasoning=${config.showReasoning} toolHistory=${toolHistory.length}\n`); } catch {}
+						if (config.showReasoning && toolHistory.length > 0) {
+							const expandable = formatToolSummaryExpandable(
+								toolHistory.map((t) => ({ name: t.name, durationMs: t.durationMs })),
+							);
+							fullFormatted += expandable;
+							try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} EXPANDABLE=${JSON.stringify(expandable)}\n`); } catch {}
+							try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} FULL_LAST200=${JSON.stringify(fullFormatted.slice(-200))}\n`); } catch {}
+						}
+						const chunks = chunkMessage(fullFormatted);
 						const fallbackChunks = chunkMessage(text);
 
 						// Single chunk: edit placeholder in place
@@ -446,6 +502,7 @@ export async function startBot(): Promise<void> {
 			{ command: "workers", description: "List active workers" },
 			{ command: "skills", description: "List installed skills" },
 			{ command: "memory", description: "Show stored memories" },
+			{ command: "settings", description: "Bot settings" },
 			{ command: "restart", description: "Restart NZB" },
 		]);
 		console.log("[nzb] Bot commands registered with Telegram");

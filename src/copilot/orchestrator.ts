@@ -1,13 +1,14 @@
 import { approveAll, type CopilotClient, type CopilotSession } from "@github/copilot-sdk";
+import { appendFileSync } from "fs";
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
-	deleteState,
-	getMemorySummary,
-	getRecentConversation,
-	getState,
-	logConversation,
-	setState,
+    deleteState,
+    getMemorySummary,
+    getRecentConversation,
+    getState,
+    logConversation,
+    setState,
 } from "../store/db.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
@@ -31,6 +32,7 @@ export type MessageCallback = (text: string, done: boolean) => void;
 export type ToolEvent = {
 	type: "tool_start" | "tool_complete";
 	toolName: string;
+	detail?: string;
 };
 
 export type ToolEventCallback = (event: ToolEvent) => void;
@@ -87,22 +89,30 @@ export function getCurrentSourceChannel(): "telegram" | "tui" | undefined {
 	return currentSourceChannel;
 }
 
+// Cache tools to avoid recreating 15+ tool objects on every session create
+let cachedTools: ReturnType<typeof createTools> | undefined;
+let cachedToolsClientRef: CopilotClient | undefined;
+
 function getSessionConfig() {
-	const tools = createTools({
-		client: copilotClient!,
-		workers,
-		onWorkerComplete: feedBackgroundResult,
-		onWorkerEvent: (event) => {
-			const worker = workers.get(event.name);
-			const channel = worker?.originChannel ?? currentSourceChannel;
-			if (workerNotifyFn) {
-				workerNotifyFn(event, channel);
-			}
-		},
-	});
+	// Only recreate tools if the client changed (e.g., after a reset)
+	if (!cachedTools || cachedToolsClientRef !== copilotClient) {
+		cachedTools = createTools({
+			client: copilotClient!,
+			workers,
+			onWorkerComplete: feedBackgroundResult,
+			onWorkerEvent: (event) => {
+				const worker = workers.get(event.name);
+				const channel = worker?.originChannel ?? currentSourceChannel;
+				if (workerNotifyFn) {
+					workerNotifyFn(event, channel);
+				}
+			},
+		});
+		cachedToolsClientRef = copilotClient;
+	}
 	const mcpServers = loadMcpConfig();
 	const skillDirectories = getSkillDirectories();
-	return { tools, mcpServers, skillDirectories };
+	return { tools: cachedTools, mcpServers, skillDirectories };
 }
 
 /** Feed a background worker result into the orchestrator as a new turn. */
@@ -116,6 +126,11 @@ export function feedBackgroundResult(workerName: string, result: string): void {
 			proactiveNotifyFn(_text, channel);
 		}
 	});
+}
+
+/** Check if a queued message is a background message. */
+function isBackgroundMessage(item: QueuedMessage): boolean {
+	return item.sourceChannel === undefined;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -152,9 +167,12 @@ function startHealthCheck(): void {
 			const state = copilotClient.getState();
 			if (state !== "connected") {
 				console.log(`[nzb] Health check: client state is '${state}', resetting…`);
+				const previousClient = copilotClient;
 				await ensureClient();
-				// Session may need recovery after client reset
-				orchestratorSession = undefined;
+				// Only invalidate session if the underlying client actually changed
+				if (copilotClient !== previousClient) {
+					orchestratorSession = undefined;
+				}
 			}
 		} catch (err) {
 			console.error(`[nzb] Health check error:`, err instanceof Error ? err.message : err);
@@ -251,19 +269,18 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 	console.log(`[nzb] Created orchestrator session ${session.sessionId.slice(0, 8)}…`);
 
 	// Recover conversation context if available (session was lost, not first run)
+	// Fire-and-forget: don't block the first real message behind recovery injection
 	const recentHistory = getRecentConversation(10);
 	if (recentHistory) {
-		console.log(`[nzb] Injecting recent conversation context into new session`);
-		try {
-			await session.sendAndWait(
-				{
-					prompt: `[System: Session recovered] Your previous session was lost. Here's the recent conversation for context — do NOT respond to these messages, just absorb the context silently:\n\n${recentHistory}\n\n(End of recovery context. Wait for the next real message.)`,
-				},
-				60_000,
-			);
-		} catch (err) {
+		console.log(`[nzb] Injecting recent conversation context into new session (non-blocking)`);
+		session.sendAndWait(
+			{
+				prompt: `[System: Session recovered] Your previous session was lost. Here's the recent conversation for context — do NOT respond to these messages, just absorb the context silently:\n\n${recentHistory}\n\n(End of recovery context. Wait for the next real message.)`,
+			},
+			20_000,
+		).catch((err) => {
 			console.log(`[nzb] Context recovery injection failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-		}
+		});
 	}
 
 	return session;
@@ -273,21 +290,23 @@ export async function initOrchestrator(client: CopilotClient): Promise<void> {
 	copilotClient = client;
 	const { mcpServers, skillDirectories } = getSessionConfig();
 
-	// Validate configured model against available models
-	try {
-		const models = await client.listModels();
-		const configured = config.copilotModel;
-		const isAvailable = models.some((m) => m.id === configured);
-		if (!isAvailable) {
+	// Validate configured model against available models (skip for default — saves 1-3s startup)
+	if (config.copilotModel !== DEFAULT_MODEL) {
+		try {
+			const models = await client.listModels();
+			const configured = config.copilotModel;
+			const isAvailable = models.some((m) => m.id === configured);
+			if (!isAvailable) {
+				console.log(
+					`[nzb] Warning: Configured model '${configured}' is not available. Falling back to '${DEFAULT_MODEL}'.`,
+				);
+				config.copilotModel = DEFAULT_MODEL;
+			}
+		} catch (err) {
 			console.log(
-				`[nzb] Warning: Configured model '${configured}' is not available. Falling back to '${DEFAULT_MODEL}'.`,
+				`[nzb] Could not validate model (will use '${config.copilotModel}' as-is): ${err instanceof Error ? err.message : err}`,
 			);
-			config.copilotModel = DEFAULT_MODEL;
 		}
-	} catch (err) {
-		console.log(
-			`[nzb] Could not validate model (will use '${config.copilotModel}' as-is): ${err instanceof Error ? err.message : err}`,
-		);
 	}
 
 	console.log(
@@ -321,7 +340,9 @@ async function executeOnSession(
 	let toolCallExecuted = false;
 	const unsubToolStart = session.on("tool.execution_start", (event: any) => {
 		const toolName = event?.data?.toolName || event?.data?.name || "tool";
-		onToolEvent?.({ type: "tool_start", toolName });
+		const args = event?.data?.arguments;
+		const detail = args?.description || args?.command?.slice(0, 80) || args?.intent || args?.pattern || args?.prompt?.slice(0, 80) || undefined;
+		onToolEvent?.({ type: "tool_start", toolName, detail });
 	});
 	const unsubToolDone = session.on("tool.execution_complete", (event: any) => {
 		toolCallExecuted = true;
@@ -344,7 +365,7 @@ async function executeOnSession(
 	});
 
 	try {
-		const result = await session.sendAndWait({ prompt }, 120_000);
+		const result = await session.sendAndWait({ prompt }, 60_000);
 		const finalContent = result?.data?.content || accumulated || "(No response)";
 		return finalContent;
 	} catch (err) {
@@ -414,7 +435,16 @@ export async function sendToOrchestrator(
 	logMessage("in", sourceLabel, prompt);
 
 	// Tag the prompt with its source channel
-	const taggedPrompt = source.type === "background" ? prompt : `[via ${sourceLabel}] ${prompt}`;
+	let taggedPrompt = source.type === "background" ? prompt : `[via ${sourceLabel}] ${prompt}`;
+
+	// Inject fresh memory context into user prompts so new memories are reflected
+	// (system message only gets memory at session creation time)
+	if (source.type !== "background") {
+		const freshMemory = getMemorySummary();
+		if (freshMemory) {
+			taggedPrompt = `<reminder>\n${freshMemory}\n</reminder>\n\n${taggedPrompt}`;
+		}
+	}
 
 	// Log role: background events are "system", user messages are "user"
 	const logRole = source.type === "background" ? "system" : "user";
@@ -423,12 +453,24 @@ export async function sendToOrchestrator(
 	const sourceChannel: "telegram" | "tui" | undefined =
 		source.type === "telegram" ? "telegram" : source.type === "tui" ? "tui" : undefined;
 
-	// Enqueue and process
+	// Enqueue with priority — user messages go before background messages
 	void (async () => {
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			try {
 				const finalContent = await new Promise<string>((resolve, reject) => {
-					messageQueue.push({ prompt: taggedPrompt, callback, onToolEvent, sourceChannel, resolve, reject });
+					const item: QueuedMessage = { prompt: taggedPrompt, callback, onToolEvent, sourceChannel, resolve, reject };
+					if (source.type === "background") {
+						// Background results go to the back of the queue
+						messageQueue.push(item);
+					} else {
+						// User messages inserted before any background messages (priority)
+						const bgIndex = messageQueue.findIndex(isBackgroundMessage);
+						if (bgIndex >= 0) {
+							messageQueue.splice(bgIndex, 0, item);
+						} else {
+							messageQueue.push(item);
+						}
+					}
 					processQueue();
 				});
 				// Deliver response to user FIRST, then log best-effort

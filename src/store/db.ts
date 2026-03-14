@@ -89,6 +89,16 @@ export function getDb(): Database.Database {
 			`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`,
 		).run();
 
+		// FTS5 virtual table for fast full-text memory search
+		try {
+			db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, content=memories, content_rowid=id)`);
+			// Populate FTS index from existing data
+			db.exec(`INSERT OR IGNORE INTO memories_fts(memories_fts) VALUES('rebuild')`);
+		} catch {
+			// FTS5 may not be available — will fall back to LIKE
+			console.log("[nzb] FTS5 not available, using LIKE fallback for memory search");
+		}
+
 		// Initialize cached prepared statements for hot-path operations
 		stmtCache = {
 			getState: db.prepare(`SELECT value FROM nzb_state WHERE key = ?`),
@@ -167,13 +177,39 @@ export function addMemory(
 	return result.lastInsertRowid as number;
 }
 
-/** Search memories by keyword and/or category. */
+/** Search memories by keyword and/or category. Uses FTS5 when available, falls back to LIKE. */
 export function searchMemories(
 	keyword?: string,
 	category?: string,
 	limit = 20,
 ): { id: number; category: string; content: string; source: string; created_at: string }[] {
 	const db = getDb();
+
+	// Try FTS5 first for keyword search (much faster than LIKE)
+	if (keyword) {
+		try {
+			const catFilter = category ? `AND m.category = ?` : "";
+			const params: (string | number)[] = [keyword + "*"];
+			if (category) params.push(category);
+			params.push(limit);
+
+			const rows = db
+				.prepare(
+					`SELECT m.id, m.category, m.content, m.source, m.created_at
+					 FROM memories_fts f
+					 JOIN memories m ON f.rowid = m.id
+					 WHERE memories_fts MATCH ? ${catFilter}
+					 ORDER BY rank LIMIT ?`,
+				)
+				.all(...params) as { id: number; category: string; content: string; source: string; created_at: string }[];
+
+			return rows;
+		} catch {
+			// FTS5 not available — fall through to LIKE
+		}
+	}
+
+	// Fallback: LIKE-based search
 	const conditions: string[] = [];
 	const params: (string | number)[] = [];
 
@@ -195,13 +231,8 @@ export function searchMemories(
 		)
 		.all(...params) as { id: number; category: string; content: string; source: string; created_at: string }[];
 
-	// Update last_accessed for returned memories
-	if (rows.length > 0) {
-		const placeholders = rows.map(() => "?").join(",");
-		db.prepare(`UPDATE memories SET last_accessed = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`).run(
-			...rows.map((r) => r.id),
-		);
-	}
+	// Update last_accessed only when explicitly requested, not on every search
+	// (removed automatic last_accessed update to avoid write side effects on reads)
 
 	return rows;
 }
