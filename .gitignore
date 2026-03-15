@@ -8,6 +8,9 @@ dist/
 # Global agent skills directory (read-only — Max reads these but never writes here)
 .agents/
 
+# Test / Coverage
+coverage/
+
 # OS
 .DS_Store
 Thumbs.db
