@@ -264,7 +264,10 @@ ${BOLD}╔═══════════════════════�
 	console.log();
 
 	const existingOpenaiKey = existing.OPENAI_API_KEY;
-	const openaiKey = await ask(rl, `  OpenAI API Key ${existingOpenaiKey ? `${DIM}(Enter to keep existing)${RESET}` : `${DIM}(Enter to skip)${RESET}`}: `);
+	const openaiKey = await ask(
+		rl,
+		`  OpenAI API Key ${existingOpenaiKey ? `${DIM}(Enter to keep existing)${RESET}` : `${DIM}(Enter to skip)${RESET}`}: `,
+	);
 	const finalOpenaiKey = openaiKey.trim() || existingOpenaiKey || "";
 	if (finalOpenaiKey) {
 		console.log(`\n${GREEN}  ✓ Whisper transcription enabled${RESET}\n`);

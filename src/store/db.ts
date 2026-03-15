@@ -103,7 +103,9 @@ export function getDb(): Database.Database {
 
 		// FTS5 virtual table for fast full-text memory search
 		try {
-			db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, content=memories, content_rowid=id)`);
+			db.exec(
+				`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, content=memories, content_rowid=id)`,
+			);
 			// Populate FTS index from existing data
 			db.exec(`INSERT OR IGNORE INTO memories_fts(memories_fts) VALUES('rebuild')`);
 		} catch {
@@ -116,7 +118,9 @@ export function getDb(): Database.Database {
 			getState: db.prepare(`SELECT value FROM nzb_state WHERE key = ?`),
 			setState: db.prepare(`INSERT OR REPLACE INTO nzb_state (key, value) VALUES (?, ?)`),
 			deleteState: db.prepare(`DELETE FROM nzb_state WHERE key = ?`),
-			logConversation: db.prepare(`INSERT INTO conversation_log (role, content, source, telegram_msg_id) VALUES (?, ?, ?, ?)`),
+			logConversation: db.prepare(
+				`INSERT INTO conversation_log (role, content, source, telegram_msg_id) VALUES (?, ?, ?, ?)`,
+			),
 			pruneConversation: db.prepare(
 				`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`,
 			),
@@ -147,7 +151,12 @@ export function deleteState(key: string): void {
 }
 
 /** Log a conversation turn (user, assistant, or system) with optional Telegram message ID. Returns the row ID. */
-export function logConversation(role: "user" | "assistant" | "system", content: string, source: string, telegramMsgId?: number): number {
+export function logConversation(
+	role: "user" | "assistant" | "system",
+	content: string,
+	source: string,
+	telegramMsgId?: number,
+): number {
 	getDb(); // ensure init
 	const result = stmtCache!.logConversation.run(role, content, source, telegramMsgId ?? null);
 	// Keep last 200 entries to support context recovery after session loss
@@ -165,7 +174,9 @@ export function getConversationContext(telegramMsgId: number): string | undefine
 	if (!row) return undefined;
 
 	// Fetch 4 rows before + the target + 4 rows after (handles ID gaps from pruning)
-	const rows = db.prepare(`
+	const rows = db
+		.prepare(
+			`
 		SELECT role, content, source, ts FROM (
 			SELECT * FROM conversation_log WHERE id < ? ORDER BY id DESC LIMIT 4
 		)
@@ -175,8 +186,13 @@ export function getConversationContext(telegramMsgId: number): string | undefine
 		SELECT role, content, source, ts FROM (
 			SELECT * FROM conversation_log WHERE id > ? ORDER BY id ASC LIMIT 4
 		)
-	`).all(row.id, row.id, row.id) as {
-		role: string; content: string; source: string; ts: string;
+	`,
+		)
+		.all(row.id, row.id, row.id) as {
+		role: string;
+		content: string;
+		source: string;
+		ts: string;
 	}[];
 	if (rows.length === 0) return undefined;
 

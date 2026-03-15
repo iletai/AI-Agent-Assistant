@@ -3,12 +3,12 @@ import { appendFileSync } from "fs";
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
-    deleteState,
-    getMemorySummary,
-    getRecentConversation,
-    getState,
-    logConversation,
-    setState,
+	deleteState,
+	getMemorySummary,
+	getRecentConversation,
+	getState,
+	logConversation,
+	setState,
 } from "../store/db.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
@@ -283,14 +283,16 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 	const recentHistory = getRecentConversation(10);
 	if (recentHistory) {
 		console.log(`[nzb] Injecting recent conversation context into new session (non-blocking)`);
-		session.sendAndWait(
-			{
-				prompt: `[System: Session recovered] Your previous session was lost. Here's the recent conversation for context — do NOT respond to these messages, just absorb the context silently:\n\n${recentHistory}\n\n(End of recovery context. Wait for the next real message.)`,
-			},
-			20_000,
-		).catch((err) => {
-			console.log(`[nzb] Context recovery injection failed (non-fatal): ${err instanceof Error ? err.message : err}`);
-		});
+		session
+			.sendAndWait(
+				{
+					prompt: `[System: Session recovered] Your previous session was lost. Here's the recent conversation for context — do NOT respond to these messages, just absorb the context silently:\n\n${recentHistory}\n\n(End of recovery context. Wait for the next real message.)`,
+				},
+				20_000,
+			)
+			.catch((err) => {
+				console.log(`[nzb] Context recovery injection failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+			});
 	}
 
 	return session;
@@ -352,7 +354,13 @@ async function executeOnSession(
 	const unsubToolStart = session.on("tool.execution_start", (event: any) => {
 		const toolName = event?.data?.toolName || event?.data?.name || "tool";
 		const args = event?.data?.arguments;
-		const detail = args?.description || args?.command?.slice(0, 80) || args?.intent || args?.pattern || args?.prompt?.slice(0, 80) || undefined;
+		const detail =
+			args?.description ||
+			args?.command?.slice(0, 80) ||
+			args?.intent ||
+			args?.pattern ||
+			args?.prompt?.slice(0, 80) ||
+			undefined;
 		onToolEvent?.({ type: "tool_start", toolName, detail });
 	});
 	const unsubToolDone = session.on("tool.execution_complete", (event: any) => {
@@ -396,11 +404,11 @@ async function executeOnSession(
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 
-			// On timeout, deliver whatever was accumulated instead of retrying from scratch
-			if (/timeout/i.test(msg) && accumulated.length > 0) {
-				console.log(`[nzb] Timeout — delivering ${accumulated.length} chars of partial content`);
-				return accumulated + "\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
-			}
+		// On timeout, deliver whatever was accumulated instead of retrying from scratch
+		if (/timeout/i.test(msg) && accumulated.length > 0) {
+			console.log(`[nzb] Timeout — delivering ${accumulated.length} chars of partial content`);
+			return accumulated + "\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
+		}
 
 		// If the session is broken, invalidate it so it's recreated on next attempt
 		if (/closed|destroy|disposed|invalid|expired|not found/i.test(msg)) {
@@ -486,7 +494,15 @@ export async function sendToOrchestrator(
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			try {
 				const finalContent = await new Promise<string>((resolve, reject) => {
-					const item: QueuedMessage = { prompt: taggedPrompt, callback, onToolEvent, onUsage, sourceChannel, resolve, reject };
+					const item: QueuedMessage = {
+						prompt: taggedPrompt,
+						callback,
+						onToolEvent,
+						onUsage,
+						sourceChannel,
+						resolve,
+						reject,
+					};
 					if (source.type === "background") {
 						// Background results go to the back of the queue
 						messageQueue.push(item);

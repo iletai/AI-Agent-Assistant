@@ -22,7 +22,9 @@ export function registerCallbackHandlers(bot: Bot): void {
 								const chunks = chunkMessage(formatted);
 								await bot.api.editMessageText(chatId, originalMsg.message_id, chunks[0], { parse_mode: "HTML" });
 							} catch {
-								try { await ctx.reply(text); } catch {}
+								try {
+									await ctx.reply(text);
+								} catch {}
 							}
 						})();
 					}

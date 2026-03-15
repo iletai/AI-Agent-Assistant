@@ -186,7 +186,10 @@ export function registerMediaHandlers(bot: Bot): void {
 						prompt = `[Voice message transcribed (${duration}s)]: ${transcript}`;
 					}
 				} catch (whisperErr) {
-					console.error("[nzb] Whisper transcription failed:", whisperErr instanceof Error ? whisperErr.message : whisperErr);
+					console.error(
+						"[nzb] Whisper transcription failed:",
+						whisperErr instanceof Error ? whisperErr.message : whisperErr,
+					);
 					prompt = `[User sent a voice message (${duration}s), saved at: ${localPath}. Transcription failed: ${whisperErr instanceof Error ? whisperErr.message : String(whisperErr)}]`;
 				}
 			} else {
@@ -197,7 +200,11 @@ export function registerMediaHandlers(bot: Bot): void {
 				voiceReplyContext + prompt,
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
-					if (done) void sendFormattedReply(bot, chatId, text, { replyTo: userMessageId, assistantLogId: meta?.assistantLogId });
+					if (done)
+						void sendFormattedReply(bot, chatId, text, {
+							replyTo: userMessageId,
+							assistantLogId: meta?.assistantLogId,
+						});
 				},
 			);
 		} catch (err) {

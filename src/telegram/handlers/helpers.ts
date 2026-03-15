@@ -43,7 +43,9 @@ export async function sendFormattedReply(
 			setConversationTelegramMsgId(opts.assistantLogId, firstMsgId);
 		} catch {}
 	}
-	try { await botInstance.api.setMessageReaction(chatId, opts?.replyTo ?? 0, [{ type: "emoji", emoji: "👍" }]); } catch {}
+	try {
+		await botInstance.api.setMessageReaction(chatId, opts?.replyTo ?? 0, [{ type: "emoji", emoji: "👍" }]);
+	} catch {}
 
 	return firstMsgId;
 }
@@ -51,6 +53,8 @@ export async function sendFormattedReply(
 /** Remove a temp directory after a delay (gives orchestrator time to use the file). */
 export function scheduleTempCleanup(dirPath: string, delayMs = 5 * 60_000): void {
 	setTimeout(() => {
-		try { rmSync(dirPath, { recursive: true, force: true }); } catch {}
+		try {
+			rmSync(dirPath, { recursive: true, force: true });
+		} catch {}
 	}, delayMs);
 }

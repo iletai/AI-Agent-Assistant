@@ -1,4 +1,3 @@
-
 import { autoRetry } from "@grammyjs/auto-retry";
 import { Menu } from "@grammyjs/menu";
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
@@ -183,8 +182,11 @@ export function createBot(): Bot {
 
 	// Persistent reply keyboard — quick actions always visible below chat input
 	const replyKeyboard = new Keyboard()
-		.text("📊 Status").text("❌ Cancel").row()
-		.text("🧠 Memory").text("🔄 Restart")
+		.text("📊 Status")
+		.text("❌ Cancel")
+		.row()
+		.text("🧠 Memory")
+		.text("🔄 Restart")
 		.resized()
 		.persistent();
 
@@ -332,7 +334,9 @@ export function createBot(): Bot {
 	});
 	bot.hears("🔄 Restart", async (ctx) => {
 		await ctx.reply("Restarting NZB...");
-		setTimeout(() => { restartDaemon().catch(console.error); }, 500);
+		setTimeout(() => {
+			restartDaemon().catch(console.error);
+		}, 500);
 	});
 
 	// Handle all text messages — progressive streaming with tool event feedback
@@ -346,7 +350,9 @@ export function createBot(): Bot {
 		// React with 👀 to acknowledge message received
 		try {
 			await ctx.react("👀");
-		} catch { /* reactions may not be available */ }
+		} catch {
+			/* reactions may not be available */
+		}
 
 		// Typing indicator — keeps sending "typing" action every 4s until the final
 		// response is delivered. We use bot.api directly for reliability, and await the
@@ -526,7 +532,7 @@ export function createBot(): Bot {
 
 						let textWithMeta = text;
 						if (usageInfo) {
-							const fmtTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+							const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 							const parts: string[] = [];
 							if (usageInfo.model) parts.push(usageInfo.model);
 							parts.push(`⬆${fmtTokens(usageInfo.inputTokens)} ⬇${fmtTokens(usageInfo.outputTokens)}`);
@@ -550,14 +556,28 @@ export function createBot(): Bot {
 						if (placeholderMsgId && chunks.length === 1) {
 							try {
 								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "HTML" });
-								try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-								if (assistantLogId) { try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, placeholderMsgId); } catch {} }
+								try {
+									await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]);
+								} catch {}
+								if (assistantLogId) {
+									try {
+										const { setConversationTelegramMsgId } = await import("../store/db.js");
+										setConversationTelegramMsgId(assistantLogId, placeholderMsgId);
+									} catch {}
+								}
 								return;
 							} catch {
 								try {
 									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0]);
-									try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-									if (assistantLogId) { try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, placeholderMsgId); } catch {} }
+									try {
+										await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]);
+									} catch {}
+									if (assistantLogId) {
+										try {
+											const { setConversationTelegramMsgId } = await import("../store/db.js");
+											setConversationTelegramMsgId(assistantLogId, placeholderMsgId);
+										} catch {}
+									}
 									return;
 								} catch {
 									/* fall through to send new messages */
@@ -592,7 +612,10 @@ export function createBot(): Bot {
 								for (let i = 0; i < fallbackChunks.length; i++) {
 									if (i > 0) await new Promise((r) => setTimeout(r, 300));
 									const pageTag = fallbackChunks.length > 1 ? `📄 ${i + 1}/${fallbackChunks.length}\n` : "";
-									const sent = await ctx.reply(pageTag + fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
+									const sent = await ctx.reply(
+										pageTag + fallbackChunks[i],
+										i === 0 ? { reply_parameters: replyParams } : {},
+									);
 									if (i === 0 && sent) firstSentMsgId = sent.message_id;
 								}
 								sendSucceeded = true;
@@ -611,12 +634,17 @@ export function createBot(): Bot {
 						// Track bot message ID for reply-to context lookups
 						const botMsgId = firstSentMsgId ?? placeholderMsgId;
 						if (assistantLogId && botMsgId) {
-							try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, botMsgId); } catch {}
+							try {
+								const { setConversationTelegramMsgId } = await import("../store/db.js");
+								setConversationTelegramMsgId(assistantLogId, botMsgId);
+							} catch {}
 						}
 						// React ✅ on the user's original message to signal completion
 						try {
 							await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]);
-						} catch { /* reactions may not be available */ }
+						} catch {
+							/* reactions may not be available */
+						}
 					});
 				} else {
 					// Progressive streaming: update placeholder periodically with delta threshold

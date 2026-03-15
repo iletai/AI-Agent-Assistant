@@ -73,16 +73,13 @@ describe("toTelegramHTML", () => {
 	});
 
 	describe("code blocks", () => {
-		it("fenced code block", () =>
-			expect(toTelegramHTML("```\ncode\n```")).toBe("<pre><code>code</code></pre>"));
+		it("fenced code block", () => expect(toTelegramHTML("```\ncode\n```")).toBe("<pre><code>code</code></pre>"));
 		it("fenced with language", () =>
 			expect(toTelegramHTML("```ts\nconst x = 1;\n```")).toBe(
 				'<pre><code class="language-ts">const x = 1;</code></pre>',
 			));
 		it("escapes HTML inside code block", () =>
-			expect(toTelegramHTML("```\na < b & c > d\n```")).toBe(
-				"<pre><code>a &lt; b &amp; c &gt; d</code></pre>",
-			));
+			expect(toTelegramHTML("```\na < b & c > d\n```")).toBe("<pre><code>a &lt; b &amp; c &gt; d</code></pre>"));
 	});
 
 	describe("horizontal rules", () => {
@@ -93,8 +90,7 @@ describe("toTelegramHTML", () => {
 	describe("edge cases", () => {
 		it("empty string", () => expect(toTelegramHTML("")).toBe(""));
 		it("plain text passthrough", () => expect(toTelegramHTML("hello world")).toBe("hello world"));
-		it("multiple blank lines collapsed", () =>
-			expect(toTelegramHTML("a\n\n\n\nb")).toBe("a\n\nb"));
+		it("multiple blank lines collapsed", () => expect(toTelegramHTML("a\n\n\n\nb")).toBe("a\n\nb"));
 	});
 });
 
@@ -104,7 +100,7 @@ describe("chunkMessage", () => {
 	});
 
 	it("splits long text at newlines", () => {
-		const text = ("line\n").repeat(1000);
+		const text = "line\n".repeat(1000);
 		const chunks = chunkMessage(text);
 		expect(chunks.length).toBeGreaterThan(1);
 		for (const chunk of chunks) {

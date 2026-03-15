@@ -188,7 +188,9 @@ export const escapeSegment = escapeHtml;
  * Format tool call info as Telegram HTML expandable blockquote.
  * First line visible, tool list expands on tap.
  */
-export function formatToolSummaryExpandable(toolCalls: { name: string; durationMs?: number; detail?: string }[]): string {
+export function formatToolSummaryExpandable(
+	toolCalls: { name: string; durationMs?: number; detail?: string }[],
+): string {
 	if (toolCalls.length === 0) return "";
 
 	const lines = toolCalls.map((t) => {
