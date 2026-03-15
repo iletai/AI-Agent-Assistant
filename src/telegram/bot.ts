@@ -3,6 +3,7 @@ import { autoRetry } from "@grammyjs/auto-retry";
 import { Menu } from "@grammyjs/menu";
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
+import { rmSync } from "fs";
 import { config, persistEnvVar, persistModel } from "../config.js";
 import type { ToolEventCallback, UsageCallback } from "../copilot/orchestrator.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers, sendToOrchestrator } from "../copilot/orchestrator.js";
@@ -22,6 +23,59 @@ function getUptimeStr(): string {
 	const minutes = Math.floor((uptime % 3600) / 60);
 	const seconds = uptime % 60;
 	return hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+/**
+ * Send a formatted HTML reply with multi-chunk support and fallback to plain text.
+ * Consolidates the repeated toTelegramHTML → chunkMessage → fallback → send pattern.
+ */
+async function sendFormattedReply(
+	botInstance: Bot,
+	chatId: number,
+	text: string,
+	opts?: { replyTo?: number; assistantLogId?: number },
+): Promise<number | undefined> {
+	const formatted = toTelegramHTML(text);
+	const chunks = chunkMessage(formatted);
+	const fallbackChunks = chunkMessage(text);
+	let firstMsgId: number | undefined;
+
+	for (let i = 0; i < chunks.length; i++) {
+		if (i > 0) await new Promise((r) => setTimeout(r, 300));
+		const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
+		const replyParams = i === 0 && opts?.replyTo ? { message_id: opts.replyTo } : undefined;
+		try {
+			const sent = await botInstance.api.sendMessage(chatId, pageTag + chunks[i], {
+				parse_mode: "HTML",
+				reply_parameters: replyParams,
+			});
+			if (i === 0) firstMsgId = sent.message_id;
+		} catch {
+			try {
+				const sent = await botInstance.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
+					reply_parameters: replyParams,
+				});
+				if (i === 0) firstMsgId = sent.message_id;
+			} catch {}
+		}
+	}
+
+	if (opts?.assistantLogId && firstMsgId) {
+		try {
+			const { setConversationTelegramMsgId } = await import("../store/db.js");
+			setConversationTelegramMsgId(opts.assistantLogId, firstMsgId);
+		} catch {}
+	}
+	try { await botInstance.api.setMessageReaction(chatId, opts?.replyTo ?? 0, [{ type: "emoji", emoji: "👍" }]); } catch {}
+
+	return firstMsgId;
+}
+
+/** Remove a temp directory after a delay (gives orchestrator time to use the file). */
+function scheduleTempCleanup(dirPath: string, delayMs = 5 * 60_000): void {
+	setTimeout(() => {
+		try { rmSync(dirPath, { recursive: true, force: true }); } catch {}
+	}, delayMs);
 }
 
 // Settings sub-menu
@@ -187,11 +241,14 @@ export function createBot(): Bot {
 				{ type: "telegram", chatId, messageId: originalMsg.message_id },
 				(text: string, done: boolean) => {
 					if (done) {
-						const formatted = toTelegramHTML(text);
-						const chunks = chunkMessage(formatted);
 						void (async () => {
-							try { await bot!.api.editMessageText(chatId, originalMsg.message_id, chunks[0], { parse_mode: "HTML" }); }
-							catch { try { await ctx.reply(text); } catch {} }
+							try {
+								const formatted = toTelegramHTML(text);
+								const chunks = chunkMessage(formatted);
+								await bot!.api.editMessageText(chatId, originalMsg.message_id, chunks[0], { parse_mode: "HTML" });
+							} catch {
+								try { await ctx.reply(text); } catch {}
+							}
 						})();
 					}
 				},
@@ -207,14 +264,7 @@ export function createBot(): Bot {
 				`Explain this error in simple terms and suggest a fix:\n${originalMsg.text}`,
 				{ type: "telegram", chatId, messageId: originalMsg.message_id },
 				(text: string, done: boolean) => {
-					if (done) {
-						const formatted = toTelegramHTML(text);
-						const chunks = chunkMessage(formatted);
-						void (async () => {
-							try { await ctx.reply(chunks[0], { parse_mode: "HTML" }); }
-							catch { try { await ctx.reply(text); } catch {} }
-						})();
-					}
+					if (done) void sendFormattedReply(bot!, chatId, text);
 				},
 			);
 		}
@@ -691,7 +741,6 @@ export function createBot(): Bot {
 			await ctx.react("👀");
 		} catch {}
 
-		// Get the largest photo (last in array)
 		const photo = ctx.message.photo[ctx.message.photo.length - 1];
 		try {
 			const file = await ctx.api.getFile(photo.file_id);
@@ -702,7 +751,6 @@ export function createBot(): Bot {
 			}
 			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
 
-			// Download to temp file
 			const { mkdtempSync, writeFileSync } = await import("fs");
 			const { join } = await import("path");
 			const { tmpdir } = await import("os");
@@ -713,38 +761,15 @@ export function createBot(): Bot {
 			const response = await fetch(url);
 			const buffer = Buffer.from(await response.arrayBuffer());
 			writeFileSync(localPath, buffer);
+			scheduleTempCleanup(tmpDir);
 
-			// Send to orchestrator with image context
 			const prompt = `[User sent a photo saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this image. The file is at ${localPath} — you can use bash to view it with tools if needed.`;
 
 			sendToOrchestrator(
 				prompt,
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean) => {
-					if (done) {
-						const formatted = toTelegramHTML(text);
-						const chunks = chunkMessage(formatted);
-						const fallbackChunks = chunkMessage(text);
-						void (async () => {
-							for (let i = 0; i < chunks.length; i++) {
-								if (i > 0) await new Promise((r) => setTimeout(r, 300));
-								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
-								try {
-									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
-										parse_mode: "HTML",
-										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
-									});
-								} catch {
-									try {
-										await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
-											reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
-										});
-									} catch {}
-								}
-							}
-							try { await ctx.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-						})();
-					}
+					if (done) void sendFormattedReply(bot!, chatId, text, { replyTo: userMessageId });
 				},
 			);
 		} catch (err) {
@@ -790,6 +815,7 @@ export function createBot(): Bot {
 			const response = await fetch(url);
 			const buffer = Buffer.from(await response.arrayBuffer());
 			writeFileSync(localPath, buffer);
+			scheduleTempCleanup(tmpDir);
 
 			const prompt = `[User sent a file: ${doc.file_name || "unknown"} (${doc.file_size || 0} bytes), saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this file. You can read it with bash tools.`;
 
@@ -797,30 +823,7 @@ export function createBot(): Bot {
 				prompt,
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean) => {
-					if (done) {
-						const formatted = toTelegramHTML(text);
-						const chunks = chunkMessage(formatted);
-						const fallbackChunks = chunkMessage(text);
-						void (async () => {
-							for (let i = 0; i < chunks.length; i++) {
-								if (i > 0) await new Promise((r) => setTimeout(r, 300));
-								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
-								try {
-									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
-										parse_mode: "HTML",
-										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
-									});
-								} catch {
-									try {
-										await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
-											reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
-										});
-									} catch {}
-								}
-							}
-							try { await ctx.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-						})();
-					}
+					if (done) void sendFormattedReply(bot!, chatId, text, { replyTo: userMessageId });
 				},
 			);
 		} catch (err) {
@@ -880,6 +883,7 @@ export function createBot(): Bot {
 			const response = await fetch(url);
 			const buffer = Buffer.from(await response.arrayBuffer());
 			writeFileSync(localPath, buffer);
+			scheduleTempCleanup(tmpDir);
 
 			let prompt: string;
 
@@ -920,37 +924,7 @@ export function createBot(): Bot {
 				voiceReplyContext + prompt,
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
-					if (done) {
-						const assistantLogId = meta?.assistantLogId;
-						const formatted = toTelegramHTML(text);
-						const chunks = chunkMessage(formatted);
-						const fallbackChunks = chunkMessage(text);
-						void (async () => {
-							let firstMsgId: number | undefined;
-							for (let i = 0; i < chunks.length; i++) {
-								if (i > 0) await new Promise((r) => setTimeout(r, 300));
-								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
-								try {
-									const sent = await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
-										parse_mode: "HTML",
-										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
-									});
-									if (i === 0) firstMsgId = sent.message_id;
-								} catch {
-									try {
-										const sent = await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
-											reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
-										});
-										if (i === 0) firstMsgId = sent.message_id;
-									} catch {}
-								}
-							}
-							if (assistantLogId && firstMsgId) {
-								try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, firstMsgId); } catch {}
-							}
-							try { await ctx.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-						})();
-					}
+					if (done) void sendFormattedReply(bot!, chatId, text, { replyTo: userMessageId, assistantLogId: meta?.assistantLogId });
 				},
 			);
 		} catch (err) {
@@ -958,6 +932,15 @@ export function createBot(): Bot {
 				reply_parameters: { message_id: userMessageId },
 			});
 		}
+	});
+
+	// Global error handler — prevents unhandled errors from crashing the bot
+	bot.catch((err) => {
+		const ctx = err.ctx;
+		const e = err.error;
+		const msg = e instanceof Error ? e.message : String(e);
+		console.error(`[nzb] Bot error for ${ctx?.update?.update_id}: ${msg}`);
+		void logError(`Bot error: ${msg.slice(0, 200)}`);
 	});
 
 	return bot;
@@ -1017,22 +1000,7 @@ export async function stopBot(): Promise<void> {
 /** Send an unsolicited message to the authorized user (for background task completions). */
 export async function sendProactiveMessage(text: string): Promise<void> {
 	if (!bot || config.authorizedUserId === undefined) return;
-	const formatted = toTelegramHTML(text);
-	const chunks = chunkMessage(formatted);
-	const fallbackChunks = chunkMessage(text);
-	for (let i = 0; i < chunks.length; i++) {
-		if (i > 0) await new Promise((r) => setTimeout(r, 300));
-		const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
-		try {
-			await bot.api.sendMessage(config.authorizedUserId, pageTag + chunks[i], { parse_mode: "HTML" });
-		} catch {
-			try {
-				await bot.api.sendMessage(config.authorizedUserId, pageTag + (fallbackChunks[i] ?? chunks[i]));
-			} catch {
-				// Bot may not be connected yet
-			}
-		}
-	}
+	await sendFormattedReply(bot, config.authorizedUserId, text);
 }
 
 /** Send a worker lifecycle notification to the authorized user. */
