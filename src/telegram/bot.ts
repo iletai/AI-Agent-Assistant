@@ -129,18 +129,11 @@ function formatMemoryList(memories: { id: number; category: string; content: str
 	for (const items of Object.values(groups)) {
 		items.sort((a, b) => a.id - b.id);
 	}
-	const COL = 30; // content width for mobile
 	const sections = Object.entries(groups).map(([cat, items]) => {
 		const icon = CATEGORY_ICONS[cat] || "📝";
 		const header = `${icon} <b>${escapeHtml(cat.charAt(0).toUpperCase() + cat.slice(1))}</b>`;
-		const top = `┌─────┬${"─".repeat(COL + 2)}┐`;
-		const bot = `└─────┴${"─".repeat(COL + 2)}┘`;
-		const rows = items.map((m) => {
-			const id = `#${m.id}`.padEnd(3);
-			const txt = m.content.length > COL ? m.content.slice(0, COL - 1) + "…" : m.content.padEnd(COL);
-			return `│ ${id} │ ${txt} │`;
-		});
-		return `${header}\n<pre>${top}\n${rows.join("\n")}\n${bot}</pre>`;
+		const lines = items.map((m) => `${m.id}. ${escapeHtml(m.content)}`);
+		return `${header}\n${lines.join("\n")}`;
 	});
 	return `🧠 <b>${memories.length} memories</b>\n\n${sections.join("\n\n")}`;
 }
