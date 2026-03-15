@@ -1,4 +1,4 @@
-import { appendFileSync } from "fs";
+
 import { Bot, InlineKeyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistEnvVar, persistModel } from "../config.js";
@@ -338,7 +338,6 @@ export function createBot(): Bot {
 		};
 
 		const onToolEvent: ToolEventCallback = (event) => {
-			try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} BOT ${event.type} ${event.toolName}\n`); } catch {}
 			console.log(`[nzb] Bot received tool event: ${event.type} ${event.toolName}`);
 			if (event.type === "tool_start") {
 				currentToolName = event.toolName;
@@ -422,14 +421,11 @@ export function createBot(): Bot {
 						}
 						const formatted = toTelegramMarkdown(textWithMeta);
 						let fullFormatted = formatted;
-						try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} FINAL showReasoning=${config.showReasoning} toolHistory=${toolHistory.length}\n`); } catch {}
 						if (config.showReasoning && toolHistory.length > 0) {
 							const expandable = formatToolSummaryExpandable(
 								toolHistory.map((t) => ({ name: t.name, durationMs: t.durationMs })),
 							);
 							fullFormatted += expandable;
-							try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} EXPANDABLE=${JSON.stringify(expandable)}\n`); } catch {}
-							try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} FULL_LAST200=${JSON.stringify(fullFormatted.slice(-200))}\n`); } catch {}
 						}
 						const chunks = chunkMessage(fullFormatted);
 						const fallbackChunks = chunkMessage(textWithMeta);
@@ -449,17 +445,10 @@ export function createBot(): Bot {
 							}
 						}
 
-						// Multi-chunk or no placeholder: delete placeholder and send chunks
-						if (placeholderMsgId) {
-							try {
-								await bot!.api.deleteMessage(chatId, placeholderMsgId);
-							} catch {
-								/* ignore */
-							}
-						}
+						// Multi-chunk or edit fallthrough: send new chunks FIRST, then delete placeholder
 						const totalChunks = chunks.length;
 						const sendChunk = async (chunk: string, fallback: string, index: number) => {
-							const isFirst = index === 0;
+							const isFirst = index === 0 && !placeholderMsgId;
 							// Pagination header for multi-chunk messages
 							const pageTag = totalChunks > 1 ? `📄 ${index + 1}/${totalChunks}\n` : "";
 							const opts = isFirst
@@ -469,11 +458,13 @@ export function createBot(): Bot {
 								.reply(pageTag + chunk, opts)
 								.catch(() => ctx.reply(pageTag + fallback, isFirst ? { reply_parameters: replyParams } : {}));
 						};
+						let sendSucceeded = false;
 						try {
 							for (let i = 0; i < chunks.length; i++) {
 								if (i > 0) await new Promise((r) => setTimeout(r, 300));
 								await sendChunk(chunks[i], fallbackChunks[i] ?? chunks[i], i);
 							}
+							sendSucceeded = true;
 						} catch {
 							try {
 								for (let i = 0; i < fallbackChunks.length; i++) {
@@ -481,8 +472,17 @@ export function createBot(): Bot {
 									const pageTag = fallbackChunks.length > 1 ? `📄 ${i + 1}/${fallbackChunks.length}\n` : "";
 									await ctx.reply(pageTag + fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
 								}
+								sendSucceeded = true;
 							} catch {
 								/* nothing more we can do */
+							}
+						}
+						// Only delete placeholder AFTER new messages sent successfully
+						if (placeholderMsgId && sendSucceeded) {
+							try {
+								await bot!.api.deleteMessage(chatId, placeholderMsgId);
+							} catch {
+								/* ignore — placeholder stays but user has the real message */
 							}
 						}
 					});
