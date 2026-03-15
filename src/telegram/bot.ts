@@ -462,12 +462,19 @@ export function createBot(): Bot {
 			usageInfo = usage;
 		};
 
-		// If user replies to a message, include that message's text as context
+		// If user replies to a message, include surrounding conversation context
 		let userPrompt = ctx.message.text;
 		const replyMsg = ctx.message.reply_to_message;
 		if (replyMsg && "text" in replyMsg && replyMsg.text) {
-			const quoted = replyMsg.text.length > 500 ? replyMsg.text.slice(0, 500) + "…" : replyMsg.text;
-			userPrompt = `[Replying to: "${quoted}"]\n\n${userPrompt}`;
+			// Try to find full conversation context around the replied message
+			const { getConversationContext } = await import("../store/db.js");
+			const context = getConversationContext(replyMsg.message_id);
+			if (context) {
+				userPrompt = `[Continuing from earlier conversation:]\n---\n${context}\n---\n\n[Your reply]: ${userPrompt}`;
+			} else {
+				const quoted = replyMsg.text.length > 500 ? replyMsg.text.slice(0, 500) + "…" : replyMsg.text;
+				userPrompt = `[Replying to: "${quoted}"]\n\n${userPrompt}`;
+			}
 		}
 
 		sendToOrchestrator(
@@ -529,11 +536,13 @@ export function createBot(): Bot {
 							try {
 								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "MarkdownV2" });
 								try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
+								try { const { updateLastAssistantTelegramMsgId } = await import("../store/db.js"); updateLastAssistantTelegramMsgId(placeholderMsgId); } catch {}
 								return;
 							} catch {
 								try {
 									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0]);
 									try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
+									try { const { updateLastAssistantTelegramMsgId } = await import("../store/db.js"); updateLastAssistantTelegramMsgId(placeholderMsgId); } catch {}
 									return;
 								} catch {
 									/* fall through to send new messages */

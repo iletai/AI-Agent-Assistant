@@ -510,7 +510,8 @@ export async function sendToOrchestrator(
 				}
 				// Log both sides of the conversation after delivery
 				try {
-					logConversation(logRole, prompt, sourceLabel);
+					const telegramMsgId = source.type === "telegram" ? source.messageId : undefined;
+					logConversation(logRole, prompt, sourceLabel, telegramMsgId);
 				} catch {
 					/* best-effort */
 				}

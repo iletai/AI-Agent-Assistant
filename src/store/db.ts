@@ -16,6 +16,8 @@ let stmtCache:
 			addMemory: Statement;
 			removeMemory: Statement;
 			memorySummary: Statement;
+			getConversationByMsgId: Statement;
+			getConversationAround: Statement;
 	  }
 	| undefined;
 
@@ -48,9 +50,19 @@ export function getDb(): Database.Database {
         role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
         content TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'unknown',
+        telegram_msg_id INTEGER,
         ts DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+		// Migrate: add telegram_msg_id column if missing
+		try {
+			db.prepare(`SELECT telegram_msg_id FROM conversation_log LIMIT 1`).get();
+		} catch {
+			db.exec(`ALTER TABLE conversation_log ADD COLUMN telegram_msg_id INTEGER`);
+		}
+		// Index for fast reply-to lookups
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_telegram_msg ON conversation_log (telegram_msg_id)`);
+
 		db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +88,7 @@ export function getDb(): Database.Database {
           role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
           content TEXT NOT NULL,
           source TEXT NOT NULL DEFAULT 'unknown',
+          telegram_msg_id INTEGER,
           ts DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
@@ -104,13 +117,17 @@ export function getDb(): Database.Database {
 			getState: db.prepare(`SELECT value FROM nzb_state WHERE key = ?`),
 			setState: db.prepare(`INSERT OR REPLACE INTO nzb_state (key, value) VALUES (?, ?)`),
 			deleteState: db.prepare(`DELETE FROM nzb_state WHERE key = ?`),
-			logConversation: db.prepare(`INSERT INTO conversation_log (role, content, source) VALUES (?, ?, ?)`),
+			logConversation: db.prepare(`INSERT INTO conversation_log (role, content, source, telegram_msg_id) VALUES (?, ?, ?, ?)`),
 			pruneConversation: db.prepare(
 				`DELETE FROM conversation_log WHERE id NOT IN (SELECT id FROM conversation_log ORDER BY id DESC LIMIT 200)`,
 			),
 			addMemory: db.prepare(`INSERT INTO memories (category, content, source) VALUES (?, ?, ?)`),
 			removeMemory: db.prepare(`DELETE FROM memories WHERE id = ?`),
 			memorySummary: db.prepare(`SELECT id, category, content FROM memories ORDER BY category, last_accessed DESC`),
+			getConversationByMsgId: db.prepare(`SELECT id FROM conversation_log WHERE telegram_msg_id = ? LIMIT 1`),
+			getConversationAround: db.prepare(
+				`SELECT role, content, source, ts FROM conversation_log WHERE id BETWEEN ? - 4 AND ? + 4 ORDER BY id ASC`,
+			),
 		};
 	}
 	return db;
@@ -133,15 +150,43 @@ export function deleteState(key: string): void {
 	stmtCache!.deleteState.run(key);
 }
 
-/** Log a conversation turn (user, assistant, or system). */
-export function logConversation(role: "user" | "assistant" | "system", content: string, source: string): void {
+/** Log a conversation turn (user, assistant, or system) with optional Telegram message ID. */
+export function logConversation(role: "user" | "assistant" | "system", content: string, source: string, telegramMsgId?: number): void {
 	getDb(); // ensure init
-	stmtCache!.logConversation.run(role, content, source);
+	stmtCache!.logConversation.run(role, content, source, telegramMsgId ?? null);
 	// Keep last 200 entries to support context recovery after session loss
 	logInsertCount++;
 	if (logInsertCount % 50 === 0) {
 		stmtCache!.pruneConversation.run();
 	}
+}
+
+/** Get conversation context around a Telegram message ID (±2 turns). */
+export function getConversationContext(telegramMsgId: number): string | undefined {
+	getDb(); // ensure init
+	const row = stmtCache!.getConversationByMsgId.get(telegramMsgId) as { id: number } | undefined;
+	if (!row) return undefined;
+
+	const rows = stmtCache!.getConversationAround.all(row.id, row.id) as {
+		role: string; content: string; source: string; ts: string;
+	}[];
+	if (rows.length === 0) return undefined;
+
+	return rows
+		.map((r) => {
+			const tag = r.role === "user" ? "You" : r.role === "assistant" ? "NZB" : "System";
+			const content = r.content.length > 400 ? r.content.slice(0, 400) + "…" : r.content;
+			return `${tag}: ${content}`;
+		})
+		.join("\n");
+}
+
+/** Update the most recent assistant log entry with its Telegram message ID (for reply-to lookups). */
+export function updateLastAssistantTelegramMsgId(telegramMsgId: number): void {
+	const db = getDb();
+	db.prepare(
+		`UPDATE conversation_log SET telegram_msg_id = ? WHERE id = (SELECT id FROM conversation_log WHERE role = 'assistant' ORDER BY id DESC LIMIT 1)`,
+	).run(telegramMsgId);
 }
 
 /** Get recent conversation history formatted for injection into system message. */
