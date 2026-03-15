@@ -9,7 +9,7 @@ export function escapeHtml(text: string): string {
 
 /**
  * Split a long message into chunks that fit within Telegram's message limit.
- * HTML-aware: if a split falls inside a <pre> block, close and reopen it.
+ * HTML-aware: if a split falls inside a <pre> or <blockquote> block, close and reopen it.
  */
 export function chunkMessage(text: string): string[] {
 	if (text.length <= TELEGRAM_MAX_LENGTH) {
@@ -35,14 +35,18 @@ export function chunkMessage(text: string): string[] {
 
 		const segment = remaining.slice(0, splitAt);
 
-		// Count <pre> vs </pre> — mismatch means we're inside a code block
-		const opens = (segment.match(/<pre/g) || []).length;
-		const closes = (segment.match(/<\/pre>/g) || []).length;
-		const insideCodeBlock = opens > closes;
+		// Check for unclosed block-level tags
+		const preOpens = (segment.match(/<pre/g) || []).length;
+		const preCloses = (segment.match(/<\/pre>/g) || []).length;
+		const bqOpens = (segment.match(/<blockquote/g) || []).length;
+		const bqCloses = (segment.match(/<\/blockquote>/g) || []).length;
 
-		if (insideCodeBlock) {
+		if (preOpens > preCloses) {
 			chunks.push(segment + "\n</pre>");
 			remaining = "<pre>" + remaining.slice(splitAt).trimStart();
+		} else if (bqOpens > bqCloses) {
+			chunks.push(segment + "</blockquote>");
+			remaining = "<blockquote>" + remaining.slice(splitAt).trimStart();
 		} else {
 			chunks.push(segment);
 			remaining = remaining.slice(splitAt).trimStart();
@@ -119,10 +123,10 @@ export function toTelegramHTML(text: string): string {
 	// 6. Remove horizontal rules
 	out = out.replace(/^[-*_]{3,}\s*$/gm, "");
 
-	// 7. Blockquotes → <blockquote>
+	// 7. Strip blockquote markers but keep content for inline formatting (processed later at step 14b)
 	out = out.replace(/(?:^>\s?(.*)$\n?)+/gm, (block) => {
 		const content = block.replace(/^>\s?/gm, "").trim();
-		return stashToken(`<blockquote>${escapeHtml(content)}</blockquote>`);
+		return `\x00BQ_START\x00${content}\x00BQ_END\x00\n`;
 	});
 
 	// 8. Unordered lists: - item or * item → • item
@@ -152,6 +156,14 @@ export function toTelegramHTML(text: string): string {
 
 	// 14. Underline __text__ → <u>
 	out = out.replace(/__(.+?)__/g, (_m, inner) => stashToken(`<u>${escapeHtml(inner)}</u>`));
+
+	// 14b. Wrap blockquote markers → <blockquote> (inner content already formatted by steps 10-14)
+	out = out.replace(/\x00BQ_START\x00([\s\S]*?)\x00BQ_END\x00/g, (_m, content) => {
+		// Escape plain text while preserving stash tokens (same KEEP pattern as bold/italic)
+		const escaped = escapeHtml(content.replace(/\x00S\d+\x00/g, (tok: string) => `\x00KEEP${tok}\x00KEEP`));
+		const restored = escaped.replace(/\x00KEEP\x00S(\d+)\x00\x00KEEP/g, (_m2: string, i: string) => stash[+i]);
+		return stashToken(`<blockquote>${restored}</blockquote>`);
+	});
 
 	// 15. Escape remaining plain text
 	out = escapeHtml(out);
