@@ -8,6 +8,7 @@ import { listSkills } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { searchMemories } from "../store/db.js";
 import { chunkMessage, formatToolSummaryExpandable, toTelegramMarkdown } from "./formatter.js";
+import { initLogChannel, logDebug, logError, logInfo } from "./log-channel.js";
 
 let bot: Bot | undefined;
 const startedAt = Date.now();
@@ -48,6 +49,7 @@ export function createBot(): Bot {
 		},
 	});
 	console.log("[nzb] Telegram bot using direct HTTPS agent (proxy bypass)");
+	initLogChannel(bot);
 
 	// Auth middleware — only allow the authorized user
 	bot.use(async (ctx, next) => {
@@ -261,6 +263,8 @@ export function createBot(): Bot {
 		const chatId = ctx.chat.id;
 		const userMessageId = ctx.message.message_id;
 		const replyParams = { message_id: userMessageId };
+		const msgPreview = ctx.message.text.length > 80 ? ctx.message.text.slice(0, 80) + "…" : ctx.message.text;
+		void logInfo(`📩 Message: ${msgPreview}`);
 
 		// Typing indicator — keeps sending "typing" action every 4s until the final
 		// response is delivered. We use bot.api directly for reliability, and await the
@@ -340,6 +344,7 @@ export function createBot(): Bot {
 		const onToolEvent: ToolEventCallback = (event) => {
 			console.log(`[nzb] Bot received tool event: ${event.type} ${event.toolName}`);
 			if (event.type === "tool_start") {
+				void logDebug(`🔧 Tool start: ${event.toolName}`);
 				currentToolName = event.toolName;
 				toolHistory.push({ name: event.toolName, startTime: Date.now() });
 				const existingText = lastEditedText.replace(/^🔧 .*\n\n/, "");
@@ -386,11 +391,14 @@ export function createBot(): Bot {
 				if (done) {
 					finalized = true;
 					stopTyping();
+					const elapsed = ((Date.now() - handlerStartTime) / 1000).toFixed(1);
+					void logInfo(`✅ Response done (${elapsed}s, ${toolHistory.length} tools, ${text.length} chars)`);
 					// Wait for in-flight edits to finish before sending the final response
 					void editChain.then(async () => {
 						// Format error messages with a distinct visual
 						const isError = text.startsWith("Error:");
 						if (isError) {
+							void logError(`Response error: ${text.slice(0, 200)}`);
 							const errorText = `⚠️ ${text}`;
 							if (placeholderMsgId) {
 								try {
@@ -537,7 +545,10 @@ export async function startBot(): Promise<void> {
 
 	bot
 		.start({
-			onStart: () => console.log("[nzb] Telegram bot connected"),
+			onStart: () => {
+				console.log("[nzb] Telegram bot connected");
+				void logInfo(`🚀 NZB v${process.env.npm_package_version || "?"} started (model: ${config.copilotModel})`);
+			},
 		})
 		.catch((err: any) => {
 			if (err?.error_code === 401) {

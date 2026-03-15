@@ -14,6 +14,7 @@ const configSchema = z.object({
 	COPILOT_MODEL: z.string().optional(),
 	WORKER_TIMEOUT: z.string().optional(),
 	SHOW_REASONING: z.string().optional(),
+	LOG_CHANNEL_ID: z.string().optional(),
 	NODE_EXTRA_CA_CERTS: z.string().optional(),
 });
 
@@ -42,6 +43,8 @@ if (!Number.isInteger(parsedWorkerTimeout) || parsedWorkerTimeout <= 0) {
 	throw new Error(`WORKER_TIMEOUT must be a positive integer (ms), got: "${raw.WORKER_TIMEOUT}"`);
 }
 
+const parsedLogChannelId = raw.LOG_CHANNEL_ID ? raw.LOG_CHANNEL_ID.trim() : undefined;
+
 export const DEFAULT_MODEL = "claude-sonnet-4.6";
 
 let _copilotModel = raw.COPILOT_MODEL || DEFAULT_MODEL;
@@ -50,6 +53,7 @@ export const config = {
 	telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
 	authorizedUserId: parsedUserId,
 	apiPort: parsedPort,
+	logChannelId: parsedLogChannelId,
 	workerTimeoutMs: parsedWorkerTimeout,
 	get copilotModel(): string {
 		return _copilotModel;
