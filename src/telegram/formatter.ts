@@ -114,6 +114,9 @@ export function toTelegramHTML(text: string): string {
 		stashToken(`<a href="${escapeHtml(url)}">${escapeHtml(linkText)}</a>`),
 	);
 
+	// 3a. Stash spoiler ||text|| → <tg-spoiler> (before tables, since || resembles table syntax)
+	out = out.replace(/\|\|(.+?)\|\|/g, (_m, inner) => stashToken(`<tg-spoiler>${escapeHtml(inner)}</tg-spoiler>`));
+
 	// 4. Convert tables
 	out = out.replace(/(?:^\|.+\|[ \t]*$\n?)+/gm, (table) => stashToken(convertTable(table) + "\n"));
 
