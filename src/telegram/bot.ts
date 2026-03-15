@@ -1,7 +1,7 @@
 
 import { autoRetry } from "@grammyjs/auto-retry";
 import { Menu } from "@grammyjs/menu";
-import { Bot } from "grammy";
+import { Bot, Keyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistEnvVar, persistModel } from "../config.js";
 import type { ToolEventCallback, UsageCallback } from "../copilot/orchestrator.js";
@@ -177,10 +177,18 @@ export function createBot(): Bot {
 	// Register interactive menu plugin
 	bot.use(mainMenu);
 
-	// /start and /help — with inline menu
-	bot.command("start", (ctx) =>
-		ctx.reply("NZB is online. Send me anything, or use the menu below:", { reply_markup: mainMenu }),
-	);
+	// Persistent reply keyboard — quick actions always visible below chat input
+	const replyKeyboard = new Keyboard()
+		.text("📊 Status").text("❌ Cancel").row()
+		.text("🧠 Memory").text("🔄 Restart")
+		.resized()
+		.persistent();
+
+	// /start and /help — with inline menu + reply keyboard
+	bot.command("start", async (ctx) => {
+		await ctx.reply("NZB is online. Quick actions below ⬇️", { reply_markup: replyKeyboard });
+		await ctx.reply("Or use the menu:", { reply_markup: mainMenu });
+	});
 	bot.command("help", (ctx) =>
 		ctx.reply(
 			"I'm NZB, your AI daemon.\n\n" +
@@ -294,6 +302,34 @@ export function createBot(): Bot {
 		);
 	});
 
+	// Reply keyboard button handlers — intercept before general text handler
+	bot.hears("📊 Status", async (ctx) => {
+		const workers = Array.from(getWorkers().values());
+		const lines = [
+			"📊 NZB Status",
+			`Model: ${config.copilotModel}`,
+			`Uptime: ${getUptimeStr()}`,
+			`Workers: ${workers.length} active`,
+			`Queue: ${getQueueSize()} pending`,
+		];
+		await ctx.reply(lines.join("\n"));
+	});
+	bot.hears("❌ Cancel", async (ctx) => {
+		const cancelled = await cancelCurrentMessage();
+		await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
+	});
+	bot.hears("🧠 Memory", async (ctx) => {
+		const memories = searchMemories(undefined, undefined, 50);
+		if (memories.length === 0) {
+			await ctx.reply("No memories stored.");
+		} else {
+			await ctx.reply(formatMemoryList(memories), { parse_mode: "HTML" });
+		}
+	});
+	bot.hears("🔄 Restart", async (ctx) => {
+		await ctx.reply("Restarting NZB...");
+		setTimeout(() => { restartDaemon().catch(console.error); }, 500);
+	});
 
 	// Handle all text messages — progressive streaming with tool event feedback
 	bot.on("message:text", async (ctx) => {
