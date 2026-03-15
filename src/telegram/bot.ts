@@ -540,6 +540,156 @@ export function createBot(): Bot {
 		);
 	});
 
+	// Handle photo messages — download and pass to AI as image description request
+	bot.on("message:photo", async (ctx) => {
+		const chatId = ctx.chat.id;
+		const userMessageId = ctx.message.message_id;
+		const caption = ctx.message.caption || "Describe this image and analyze what you see.";
+		void logInfo(`📸 Photo received: ${caption.slice(0, 80)}`);
+
+		try {
+			await ctx.react("👀");
+		} catch {}
+
+		// Get the largest photo (last in array)
+		const photo = ctx.message.photo[ctx.message.photo.length - 1];
+		try {
+			const file = await ctx.api.getFile(photo.file_id);
+			const filePath = file.file_path;
+			if (!filePath) {
+				await ctx.reply("❌ Could not download photo.", { reply_parameters: { message_id: userMessageId } });
+				return;
+			}
+			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
+
+			// Download to temp file
+			const { mkdtempSync, writeFileSync } = await import("fs");
+			const { join } = await import("path");
+			const { tmpdir } = await import("os");
+			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-photo-"));
+			const ext = filePath.split(".").pop() || "jpg";
+			const localPath = join(tmpDir, `photo.${ext}`);
+
+			const response = await fetch(url);
+			const buffer = Buffer.from(await response.arrayBuffer());
+			writeFileSync(localPath, buffer);
+
+			// Send to orchestrator with image context
+			const prompt = `[User sent a photo saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this image. The file is at ${localPath} — you can use bash to view it with tools if needed.`;
+
+			sendToOrchestrator(
+				prompt,
+				{ type: "telegram", chatId, messageId: userMessageId },
+				(text: string, done: boolean) => {
+					if (done) {
+						const formatted = toTelegramMarkdown(text);
+						const chunks = chunkMessage(formatted);
+						const fallbackChunks = chunkMessage(text);
+						void (async () => {
+							for (let i = 0; i < chunks.length; i++) {
+								if (i > 0) await new Promise((r) => setTimeout(r, 300));
+								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
+								try {
+									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
+										parse_mode: "MarkdownV2",
+										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
+									});
+								} catch {
+									try {
+										await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
+											reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
+										});
+									} catch {}
+								}
+							}
+							try { await ctx.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
+						})();
+					}
+				},
+			);
+		} catch (err) {
+			await ctx.reply(`❌ Error processing photo: ${err instanceof Error ? err.message : String(err)}`, {
+				reply_parameters: { message_id: userMessageId },
+			});
+		}
+	});
+
+	// Handle document/file messages — download and pass to AI
+	bot.on("message:document", async (ctx) => {
+		const chatId = ctx.chat.id;
+		const userMessageId = ctx.message.message_id;
+		const doc = ctx.message.document;
+		const caption = ctx.message.caption || `Analyze this file: ${doc.file_name || "unknown"}`;
+		void logInfo(`📄 Document received: ${doc.file_name || "unknown"} (${doc.file_size || 0} bytes)`);
+
+		try {
+			await ctx.react("👀");
+		} catch {}
+
+		// Limit file size to 10MB
+		if (doc.file_size && doc.file_size > 10 * 1024 * 1024) {
+			await ctx.reply("❌ File too large (max 10MB).", { reply_parameters: { message_id: userMessageId } });
+			return;
+		}
+
+		try {
+			const file = await ctx.api.getFile(doc.file_id);
+			const filePath = file.file_path;
+			if (!filePath) {
+				await ctx.reply("❌ Could not download file.", { reply_parameters: { message_id: userMessageId } });
+				return;
+			}
+			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
+
+			const { mkdtempSync, writeFileSync } = await import("fs");
+			const { join } = await import("path");
+			const { tmpdir } = await import("os");
+			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-doc-"));
+			const localPath = join(tmpDir, doc.file_name || "file");
+
+			const response = await fetch(url);
+			const buffer = Buffer.from(await response.arrayBuffer());
+			writeFileSync(localPath, buffer);
+
+			const prompt = `[User sent a file: ${doc.file_name || "unknown"} (${doc.file_size || 0} bytes), saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this file. You can read it with bash tools.`;
+
+			sendToOrchestrator(
+				prompt,
+				{ type: "telegram", chatId, messageId: userMessageId },
+				(text: string, done: boolean) => {
+					if (done) {
+						const formatted = toTelegramMarkdown(text);
+						const chunks = chunkMessage(formatted);
+						const fallbackChunks = chunkMessage(text);
+						void (async () => {
+							for (let i = 0; i < chunks.length; i++) {
+								if (i > 0) await new Promise((r) => setTimeout(r, 300));
+								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
+								try {
+									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
+										parse_mode: "MarkdownV2",
+										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
+									});
+								} catch {
+									try {
+										await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
+											reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
+										});
+									} catch {}
+								}
+							}
+							try { await ctx.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
+						})();
+					}
+				},
+			);
+		} catch (err) {
+			await ctx.reply(`❌ Error processing file: ${err instanceof Error ? err.message : String(err)}`, {
+				reply_parameters: { message_id: userMessageId },
+			});
+		}
+	});
+
 	return bot;
 }
 
