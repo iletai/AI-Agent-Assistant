@@ -86,7 +86,7 @@ const mainMenu = new Menu("main-menu")
 		if (memories.length === 0) {
 			await ctx.reply("No memories stored.");
 		} else {
-			await ctx.reply(formatMemoryList(memories));
+			await ctx.reply(formatMemoryList(memories), { parse_mode: "HTML" });
 		}
 	})
 	.submenu("⚙️ Settings", "settings-menu", async (ctx) => {
@@ -126,16 +126,24 @@ function formatMemoryList(memories: { id: number; category: string; content: str
 	for (const m of memories) {
 		(groups[m.category] ??= []).push(m);
 	}
+	// Sort by ID ascending within each group
+	for (const items of Object.values(groups)) {
+		items.sort((a, b) => a.id - b.id);
+	}
 	const sections = Object.entries(groups).map(([cat, items]) => {
 		const icon = CATEGORY_ICONS[cat] || "📝";
-		const header = `${icon} ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
+		const header = `${icon} <b>${escapeHtml(cat.charAt(0).toUpperCase() + cat.slice(1))}</b>`;
 		const lines = items.map((m) => {
-			const short = m.content.length > 60 ? m.content.slice(0, 57) + "…" : m.content;
-			return `  → #${m.id} ${short}`;
+			const short = m.content.length > 55 ? m.content.slice(0, 52) + "…" : m.content;
+			return `<code>#${m.id}</code> ${escapeHtml(short)}`;
 		});
 		return `${header}\n${lines.join("\n")}`;
 	});
-	return `🧠 ${memories.length} memories\n\n${sections.join("\n\n")}`;
+	return `🧠 <b>${memories.length} memories</b>\n\n${sections.join("\n\n")}`;
+}
+
+function escapeHtml(text: string): string {
+	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 export function createBot(): Bot {
@@ -232,7 +240,7 @@ export function createBot(): Bot {
 		if (memories.length === 0) {
 			await ctx.reply("No memories stored.");
 		} else {
-			await ctx.reply(formatMemoryList(memories));
+			await ctx.reply(formatMemoryList(memories), { parse_mode: "HTML" });
 		}
 	});
 	bot.command("skills", async (ctx) => {
