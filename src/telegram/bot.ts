@@ -1,7 +1,7 @@
 
 import { autoRetry } from "@grammyjs/auto-retry";
 import { Menu } from "@grammyjs/menu";
-import { Bot, Keyboard } from "grammy";
+import { Bot, InlineKeyboard, Keyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistEnvVar, persistModel } from "../config.js";
 import type { ToolEventCallback, UsageCallback } from "../copilot/orchestrator.js";
@@ -9,7 +9,7 @@ import { cancelCurrentMessage, getQueueSize, getWorkers, sendToOrchestrator } fr
 import { listSkills } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { searchMemories } from "../store/db.js";
-import { chunkMessage, formatToolSummaryExpandable, toTelegramMarkdown } from "./formatter.js";
+import { chunkMessage, escapeHtml, formatToolSummaryExpandable, toTelegramHTML } from "./formatter.js";
 import { initLogChannel, logDebug, logError, logInfo } from "./log-channel.js";
 
 let bot: Bot | undefined;
@@ -138,9 +138,7 @@ function formatMemoryList(memories: { id: number; category: string; content: str
 	return `🧠 <b>${memories.length} memories</b>\n\n${sections.join("\n\n")}`;
 }
 
-function escapeHtml(text: string): string {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+// escapeHtml is imported from formatter.ts
 
 export function createBot(): Bot {
 	if (!config.telegramBotToken) {
@@ -176,6 +174,51 @@ export function createBot(): Bot {
 
 	// Register interactive menu plugin
 	bot.use(mainMenu);
+
+	// Callback handlers for contextual inline buttons
+	bot.callbackQuery("retry", async (ctx) => {
+		await ctx.answerCallbackQuery({ text: "Retrying..." });
+		const originalMsg = ctx.callbackQuery.message;
+		if (originalMsg?.reply_to_message && "text" in originalMsg.reply_to_message && originalMsg.reply_to_message.text) {
+			const retryPrompt = originalMsg.reply_to_message.text;
+			const chatId = ctx.chat!.id;
+			sendToOrchestrator(
+				retryPrompt,
+				{ type: "telegram", chatId, messageId: originalMsg.message_id },
+				(text: string, done: boolean) => {
+					if (done) {
+						const formatted = toTelegramHTML(text);
+						const chunks = chunkMessage(formatted);
+						void (async () => {
+							try { await bot!.api.editMessageText(chatId, originalMsg.message_id, chunks[0], { parse_mode: "HTML" }); }
+							catch { try { await ctx.reply(text); } catch {} }
+						})();
+					}
+				},
+			);
+		}
+	});
+	bot.callbackQuery("explain_error", async (ctx) => {
+		await ctx.answerCallbackQuery({ text: "Explaining..." });
+		const originalMsg = ctx.callbackQuery.message;
+		if (originalMsg && "text" in originalMsg && originalMsg.text) {
+			const chatId = ctx.chat!.id;
+			sendToOrchestrator(
+				`Explain this error in simple terms and suggest a fix:\n${originalMsg.text}`,
+				{ type: "telegram", chatId, messageId: originalMsg.message_id },
+				(text: string, done: boolean) => {
+					if (done) {
+						const formatted = toTelegramHTML(text);
+						const chunks = chunkMessage(formatted);
+						void (async () => {
+							try { await ctx.reply(chunks[0], { parse_mode: "HTML" }); }
+							catch { try { await ctx.reply(text); } catch {} }
+						})();
+					}
+				},
+			);
+		}
+	});
 
 	// Persistent reply keyboard — quick actions always visible below chat input
 	const replyKeyboard = new Keyboard()
@@ -425,8 +468,9 @@ export function createBot(): Bot {
 				void logDebug(`🔧 Tool start: ${event.toolName}${event.detail ? ` — ${event.detail}` : ""}`);
 				currentToolName = event.toolName;
 				toolHistory.push({ name: event.toolName, startTime: Date.now(), detail: event.detail });
+				const elapsed = ((Date.now() - handlerStartTime) / 1000).toFixed(1);
 				const existingText = lastEditedText.replace(/^🔧 .*\n\n/, "");
-				enqueueEdit(`🔧 ${event.toolName}\n\n${existingText}`.trim() || `🔧 ${event.toolName}`);
+				enqueueEdit(`🔧 ${event.toolName} (${elapsed}s...)\n\n${existingText}`.trim() || `🔧 ${event.toolName}`);
 			} else if (event.type === "tool_complete") {
 				for (let i = toolHistory.length - 1; i >= 0; i--) {
 					if (toolHistory[i].name === event.toolName && toolHistory[i].durationMs === undefined) {
@@ -434,13 +478,21 @@ export function createBot(): Bot {
 						break;
 					}
 				}
+				// Show completion with checkmark
+				const completedTool = toolHistory.find((t) => t.name === event.toolName && t.durationMs !== undefined);
+				if (completedTool) {
+					const dur = (completedTool.durationMs! / 1000).toFixed(1);
+					const existingText = lastEditedText.replace(/^🔧 .*\n\n/, "").replace(/^✅ .*\n\n/, "");
+					enqueueEdit(`✅ ${event.toolName} (${dur}s)\n\n${existingText}`.trim());
+				}
 				currentToolName = undefined;
 			} else if (event.type === "tool_partial_result" && event.detail) {
 				const now = Date.now();
 				if (now - lastEditTime >= EDIT_INTERVAL_MS) {
 					lastEditTime = now;
+					const elapsed = ((now - handlerStartTime) / 1000).toFixed(1);
 					const truncated = event.detail.length > 500 ? "⋯\n" + event.detail.slice(-500) : event.detail;
-					const toolLine = `🔧 ${currentToolName || event.toolName}\n\`\`\`\n${truncated}\n\`\`\``;
+					const toolLine = `🔧 ${currentToolName || event.toolName} (${elapsed}s...)\n<pre>${escapeHtml(truncated)}</pre>`;
 					enqueueEdit(toolLine);
 				}
 			}
@@ -494,16 +546,17 @@ export function createBot(): Bot {
 						if (isError) {
 							void logError(`Response error: ${text.slice(0, 200)}`);
 							const errorText = `⚠️ ${text}`;
+							const errorKb = new InlineKeyboard().text("🔄 Retry", "retry").text("📖 Explain", "explain_error");
 							if (placeholderMsgId) {
 								try {
-									await bot!.api.editMessageText(chatId, placeholderMsgId, errorText);
+									await bot!.api.editMessageText(chatId, placeholderMsgId, errorText, { reply_markup: errorKb });
 									return;
 								} catch {
 									/* fall through */
 								}
 							}
 							try {
-								await ctx.reply(errorText, { reply_parameters: replyParams });
+								await ctx.reply(errorText, { reply_parameters: replyParams, reply_markup: errorKb });
 							} catch {
 								/* nothing more we can do */
 							}
@@ -521,7 +574,7 @@ export function createBot(): Bot {
 							if (usageInfo.duration) parts.push(`${(usageInfo.duration / 1000).toFixed(1)}s`);
 							textWithMeta += `\n\n📊 ${parts.join(" · ")}`;
 						}
-						const formatted = toTelegramMarkdown(textWithMeta);
+						const formatted = toTelegramHTML(textWithMeta);
 						let fullFormatted = formatted;
 						if (config.showReasoning && toolHistory.length > 0) {
 							const expandable = formatToolSummaryExpandable(
@@ -535,7 +588,7 @@ export function createBot(): Bot {
 						// Single chunk: edit placeholder in place
 						if (placeholderMsgId && chunks.length === 1) {
 							try {
-								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "MarkdownV2" });
+								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "HTML" });
 								try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
 								if (assistantLogId) { try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, placeholderMsgId); } catch {} }
 								return;
@@ -559,8 +612,8 @@ export function createBot(): Bot {
 							// Pagination header for multi-chunk messages
 							const pageTag = totalChunks > 1 ? `📄 ${index + 1}/${totalChunks}\n` : "";
 							const opts = isFirst
-								? { parse_mode: "MarkdownV2" as const, reply_parameters: replyParams }
-								: { parse_mode: "MarkdownV2" as const };
+								? { parse_mode: "HTML" as const, reply_parameters: replyParams }
+								: { parse_mode: "HTML" as const };
 							const sent = await ctx
 								.reply(pageTag + chunk, opts)
 								.catch(() => ctx.reply(pageTag + fallback, isFirst ? { reply_parameters: replyParams } : {}));
@@ -669,7 +722,7 @@ export function createBot(): Bot {
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean) => {
 					if (done) {
-						const formatted = toTelegramMarkdown(text);
+						const formatted = toTelegramHTML(text);
 						const chunks = chunkMessage(formatted);
 						const fallbackChunks = chunkMessage(text);
 						void (async () => {
@@ -678,7 +731,7 @@ export function createBot(): Bot {
 								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
 								try {
 									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
-										parse_mode: "MarkdownV2",
+										parse_mode: "HTML",
 										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
 									});
 								} catch {
@@ -745,7 +798,7 @@ export function createBot(): Bot {
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean) => {
 					if (done) {
-						const formatted = toTelegramMarkdown(text);
+						const formatted = toTelegramHTML(text);
 						const chunks = chunkMessage(formatted);
 						const fallbackChunks = chunkMessage(text);
 						void (async () => {
@@ -754,7 +807,7 @@ export function createBot(): Bot {
 								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
 								try {
 									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
-										parse_mode: "MarkdownV2",
+										parse_mode: "HTML",
 										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
 									});
 								} catch {
@@ -869,7 +922,7 @@ export function createBot(): Bot {
 				(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
 					if (done) {
 						const assistantLogId = meta?.assistantLogId;
-						const formatted = toTelegramMarkdown(text);
+						const formatted = toTelegramHTML(text);
 						const chunks = chunkMessage(formatted);
 						const fallbackChunks = chunkMessage(text);
 						void (async () => {
@@ -879,7 +932,7 @@ export function createBot(): Bot {
 								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
 								try {
 									const sent = await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
-										parse_mode: "MarkdownV2",
+										parse_mode: "HTML",
 										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
 									});
 									if (i === 0) firstMsgId = sent.message_id;
@@ -964,14 +1017,14 @@ export async function stopBot(): Promise<void> {
 /** Send an unsolicited message to the authorized user (for background task completions). */
 export async function sendProactiveMessage(text: string): Promise<void> {
 	if (!bot || config.authorizedUserId === undefined) return;
-	const formatted = toTelegramMarkdown(text);
+	const formatted = toTelegramHTML(text);
 	const chunks = chunkMessage(formatted);
 	const fallbackChunks = chunkMessage(text);
 	for (let i = 0; i < chunks.length; i++) {
 		if (i > 0) await new Promise((r) => setTimeout(r, 300));
 		const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
 		try {
-			await bot.api.sendMessage(config.authorizedUserId, pageTag + chunks[i], { parse_mode: "MarkdownV2" });
+			await bot.api.sendMessage(config.authorizedUserId, pageTag + chunks[i], { parse_mode: "HTML" });
 		} catch {
 			try {
 				await bot.api.sendMessage(config.authorizedUserId, pageTag + (fallbackChunks[i] ?? chunks[i]));

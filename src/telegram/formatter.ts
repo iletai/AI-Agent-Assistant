@@ -1,11 +1,15 @@
 const TELEGRAM_MAX_LENGTH = 4096;
-// Reserve space for code block closure markers and pagination prefix
-const CHUNK_TARGET = TELEGRAM_MAX_LENGTH - 20;
+// Reserve space for tag closure and pagination prefix
+const CHUNK_TARGET = TELEGRAM_MAX_LENGTH - 40;
+
+/** Escape HTML special characters. */
+export function escapeHtml(text: string): string {
+	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 /**
  * Split a long message into chunks that fit within Telegram's message limit.
- * Code-block-aware: if a split falls inside a fenced code block, the block is
- * closed at the split and reopened in the next chunk so MarkdownV2 stays valid.
+ * HTML-aware: if a split falls inside a <pre> block, close and reopen it.
  */
 export function chunkMessage(text: string): string[] {
 	if (text.length <= TELEGRAM_MAX_LENGTH) {
@@ -31,13 +35,14 @@ export function chunkMessage(text: string): string[] {
 
 		const segment = remaining.slice(0, splitAt);
 
-		// Count ``` markers — odd means we're splitting inside a code block
-		const markers = segment.match(/```/g);
-		const insideCodeBlock = markers !== null && markers.length % 2 !== 0;
+		// Count <pre> vs </pre> — mismatch means we're inside a code block
+		const opens = (segment.match(/<pre/g) || []).length;
+		const closes = (segment.match(/<\/pre>/g) || []).length;
+		const insideCodeBlock = opens > closes;
 
 		if (insideCodeBlock) {
-			chunks.push(segment + "\n```");
-			remaining = "```\n" + remaining.slice(splitAt).trimStart();
+			chunks.push(segment + "\n</pre>");
+			remaining = "<pre>" + remaining.slice(splitAt).trimStart();
 		} else {
 			chunks.push(segment);
 			remaining = remaining.slice(splitAt).trimStart();
@@ -48,22 +53,7 @@ export function chunkMessage(text: string): string[] {
 }
 
 /**
- * Escape special characters for Telegram MarkdownV2 plain text segments.
- */
-export function escapeSegment(text: string): string {
-	return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
-}
-
-/**
- * Escape only characters needed inside a MarkdownV2 link URL.
- */
-function escapeLinkUrl(url: string): string {
-	return url.replace(/([)\\])/g, "\\$1");
-}
-
-/**
- * Convert a markdown table into a readable mobile-friendly list.
- * Returns already-escaped MarkdownV2 text ready to be stashed.
+ * Convert a markdown table into a readable mobile-friendly HTML list.
  */
 function convertTable(table: string): string {
 	const rows = table
@@ -82,10 +72,10 @@ function convertTable(table: string): string {
 	return dataRows
 		.map((cols) => {
 			if (cols.length === 0) return "";
-			const first = `*${escapeSegment(cols[0])}*`;
+			const first = `<b>${escapeHtml(cols[0])}</b>`;
 			const rest = cols
 				.slice(1)
-				.map((c) => escapeSegment(c))
+				.map((c) => escapeHtml(c))
 				.join(" · ");
 			return rest ? `${first} — ${rest}` : first;
 		})
@@ -93,33 +83,34 @@ function convertTable(table: string): string {
 }
 
 /**
- * Convert standard markdown from the AI into Telegram MarkdownV2.
+ * Convert standard markdown from the AI into Telegram HTML.
  * Handles bold, italic, strikethrough, links, lists, blockquotes,
  * code blocks, headers, tables, and horizontal rules.
  */
-export function toTelegramMarkdown(text: string): string {
+export function toTelegramHTML(text: string): string {
 	const stash: string[] = [];
 	const stashToken = (s: string) => {
 		stash.push(s);
-		return `\x00STASH${stash.length - 1}\x00`;
+		return `\x00S${stash.length - 1}\x00`;
 	};
 
 	let out = text;
 
-	// 1. Stash fenced code blocks
-	out = out.replace(/```([a-z]*)\n?([\s\S]*?)```/g, (_m, lang, code) =>
-		stashToken("```" + (lang || "") + "\n" + code.trim() + "\n```"),
-	);
+	// 1. Stash fenced code blocks → <pre><code>
+	out = out.replace(/```([a-z]*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+		const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+		return stashToken(`<pre><code${cls}>${escapeHtml(code.trim())}</code></pre>`);
+	});
 
-	// 2. Stash inline code
-	out = out.replace(/`([^`\n]+)`/g, (_m, code) => stashToken("`" + code + "`"));
+	// 2. Stash inline code → <code>
+	out = out.replace(/`([^`\n]+)`/g, (_m, code) => stashToken(`<code>${escapeHtml(code)}</code>`));
 
-	// 3. Stash markdown links — [text](url) → MarkdownV2 link
+	// 3. Stash markdown links → <a href>
 	out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, linkText, url) =>
-		stashToken(`[${escapeSegment(linkText)}](${escapeLinkUrl(url)})`),
+		stashToken(`<a href="${escapeHtml(url)}">${escapeHtml(linkText)}</a>`),
 	);
 
-	// 4. Convert tables — stash to avoid double-escaping
+	// 4. Convert tables
 	out = out.replace(/(?:^\|.+\|[ \t]*$\n?)+/gm, (table) => stashToken(convertTable(table) + "\n"));
 
 	// 5. Convert headers → bold
@@ -128,54 +119,37 @@ export function toTelegramMarkdown(text: string): string {
 	// 6. Remove horizontal rules
 	out = out.replace(/^[-*_]{3,}\s*$/gm, "");
 
-	// 7. Convert blockquotes: > text → MarkdownV2 blockquote (stash > to avoid escaping)
-	out = out.replace(/^>\s?(.*)$/gm, (_m, content) => stashToken(">") + content);
+	// 7. Blockquotes → <blockquote>
+	out = out.replace(/(?:^>\s?(.*)$\n?)+/gm, (block) => {
+		const content = block.replace(/^>\s?/gm, "").trim();
+		return stashToken(`<blockquote>${escapeHtml(content)}</blockquote>`);
+	});
 
-	// 8. Convert unordered lists: - item or * item → • item
+	// 8. Unordered lists: - item or * item → • item
 	out = out.replace(/^(\s*)[-*]\s+/gm, "$1• ");
 
-	// 9. Convert ordered lists: 1. item → 1\) item (stash \) to avoid double-escaping)
-	out = out.replace(/^(\s*)(\d+)\.\s+/gm, (_m, spaces, num) => spaces + num + stashToken("\\) "));
+	// 9. Ordered lists: keep as-is (1. 2. 3.)
 
-	// 10. Extract strikethrough before escaping
-	const strikeParts: string[] = [];
-	out = out.replace(/~~(.+?)~~/g, (_m, inner) => {
-		strikeParts.push(inner);
-		return `\x00STRIKE${strikeParts.length - 1}\x00`;
-	});
+	// 10. Strikethrough ~~text~~ → <s>
+	out = out.replace(/~~(.+?)~~/g, (_m, inner) => stashToken(`<s>\x00ESC${inner}\x00ESC</s>`));
 
-	// 11. Extract bold markers before escaping
-	const boldParts: string[] = [];
-	out = out.replace(/\*\*(.+?)\*\*/g, (_m, inner) => {
-		boldParts.push(inner);
-		return `\x00BOLD${boldParts.length - 1}\x00`;
-	});
+	// 11. Bold **text** → <b>
+	out = out.replace(/\*\*(.+?)\*\*/g, (_m, inner) => stashToken(`<b>\x00ESC${inner}\x00ESC</b>`));
 
-	// 12. Extract italic markers before escaping
-	const italicParts: string[] = [];
-	out = out.replace(/\*(.+?)\*/g, (_m, inner) => {
-		italicParts.push(inner);
-		return `\x00ITALIC${italicParts.length - 1}\x00`;
-	});
+	// 12. Italic *text* → <i>
+	out = out.replace(/\*(.+?)\*/g, (_m, inner) => stashToken(`<i>\x00ESC${inner}\x00ESC</i>`));
 
-	// 13. Extract underline markers before escaping
-	const underlineParts: string[] = [];
-	out = out.replace(/__(.+?)__/g, (_m, inner) => {
-		underlineParts.push(inner);
-		return `\x00UNDERLINE${underlineParts.length - 1}\x00`;
-	});
+	// 13. Underline __text__ → <u>
+	out = out.replace(/__(.+?)__/g, (_m, inner) => stashToken(`<u>\x00ESC${inner}\x00ESC</u>`));
 
-	// 14. Escape everything that remains
-	out = escapeSegment(out);
+	// 14. Escape remaining plain text
+	out = escapeHtml(out);
 
-	// 15. Restore formatting with escaped inner text
-	out = out.replace(/\x00STRIKE(\d+)\x00/g, (_m, i) => `~${escapeSegment(strikeParts[+i])}~`);
-	out = out.replace(/\x00BOLD(\d+)\x00/g, (_m, i) => `*${escapeSegment(boldParts[+i])}*`);
-	out = out.replace(/\x00ITALIC(\d+)\x00/g, (_m, i) => `_${escapeSegment(italicParts[+i])}_`);
-	out = out.replace(/\x00UNDERLINE(\d+)\x00/g, (_m, i) => `__${escapeSegment(underlineParts[+i])}__`);
+	// 15. Restore stashed tokens
+	out = out.replace(/\x00S(\d+)\x00/g, (_m, i) => stash[+i]);
 
-	// 16. Restore stashed code blocks, inline code, links, tables
-	out = out.replace(/\x00STASH(\d+)\x00/g, (_m, i) => stash[+i]);
+	// 16. Escape inner text of formatting tags (marked with ESC)
+	out = out.replace(/\x00ESC([\s\S]*?)\x00ESC/g, (_m, inner) => escapeHtml(inner));
 
 	// 17. Clean up excessive blank lines
 	out = out.replace(/\n{3,}/g, "\n\n");
@@ -183,26 +157,23 @@ export function toTelegramMarkdown(text: string): string {
 	return out.trim();
 }
 
+/** @deprecated Use toTelegramHTML instead. Kept for backward compatibility. */
+export const toTelegramMarkdown = toTelegramHTML;
+export const escapeSegment = escapeHtml;
+
 /**
- * Format tool call info as a Telegram MarkdownV2 expandable blockquote.
- * First line (title) is always visible, tool list expands on tap.
+ * Format tool call info as Telegram HTML expandable blockquote.
+ * First line visible, tool list expands on tap.
  */
 export function formatToolSummaryExpandable(toolCalls: { name: string; durationMs?: number; detail?: string }[]): string {
 	if (toolCalls.length === 0) return "";
 
 	const lines = toolCalls.map((t) => {
-		const name = escapeSegment(t.name);
-		const dur =
-			t.durationMs !== undefined
-				? ` \\(${escapeSegment((t.durationMs / 1000).toFixed(1) + "s")}\\)`
-				: "";
-		const detail = t.detail ? `\n>  _${escapeSegment(t.detail.slice(0, 60))}_` : "";
-		return `${escapeSegment("• ")}${name}${dur}${detail}`;
+		const name = escapeHtml(t.name);
+		const dur = t.durationMs !== undefined ? ` (${(t.durationMs / 1000).toFixed(1)}s)` : "";
+		const detail = t.detail ? `\n  <i>${escapeHtml(t.detail.slice(0, 60))}</i>` : "";
+		return `• ${name}${dur}${detail}`;
 	});
 
-	const header = escapeSegment("🔧 Tools used:");
-	const toolList = lines.join(`\n>`);
-
-	// Expandable: header visible, tool list hidden until tapped
-	return `\n\n**>${header}\n>${toolList}||`;
+	return `\n\n<blockquote expandable>🔧 Tools used:\n${lines.join("\n")}</blockquote>`;
 }
