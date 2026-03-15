@@ -149,16 +149,12 @@ describe("sendToOrchestrator — callback await ordering", () => {
 		sendToOrchestrator("test prompt", { type: "telegram", chatId: 123, messageId: 456 }, callback);
 		await flushAsync(2500);
 
-		// callback_resolved must come BEFORE sendProactiveMessage
+		// callback(done=true) must be awaited before auto-continue fires
 		expect(callOrder).toContain("callback_start");
 		expect(callOrder).toContain("callback_resolved");
-		expect(callOrder).toContain("sendProactiveMessage");
 
-		const cbResolvedIdx = callOrder.indexOf("callback_resolved");
-		const proactiveIdx = callOrder.indexOf("sendProactiveMessage");
-		expect(cbResolvedIdx).toBeLessThan(proactiveIdx);
-		expect(proactiveCalledAt).toBeGreaterThanOrEqual(callbackResolvedAt);
-		expect(mockSendProactiveMessage).toHaveBeenCalledWith("🔄 Auto-continuing...");
+		// Auto-continue no longer sends a visible "🔄" proactive message
+		expect(mockSendProactiveMessage).not.toHaveBeenCalled();
 	});
 
 	it("awaits callback(done=true) on normal (non-timeout) responses without triggering auto-continue", async () => {
@@ -290,7 +286,7 @@ describe("sendToOrchestrator — callback await ordering", () => {
 		expect(doneTexts[0]).toContain("⏱ Response was cut short");
 		expect(doneTexts[1]).toBe(NORMAL_RESPONSE);
 
-		// sendProactiveMessage called exactly once (for the first timeout)
-		expect(mockSendProactiveMessage).toHaveBeenCalledTimes(1);
+		// Auto-continue no longer sends visible proactive messages
+		expect(mockSendProactiveMessage).not.toHaveBeenCalled();
 	});
 });

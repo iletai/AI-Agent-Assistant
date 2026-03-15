@@ -459,12 +459,15 @@ function isRecoverableError(err: unknown): boolean {
 	);
 }
 
+const MAX_AUTO_CONTINUE = 3;
+
 export async function sendToOrchestrator(
 	prompt: string,
 	source: MessageSource,
 	callback: MessageCallback,
 	onToolEvent?: ToolEventCallback,
 	onUsage?: UsageCallback,
+	_autoContinueCount = 0,
 ): Promise<void> {
 	const sourceLabel = source.type === "telegram" ? "telegram" : source.type === "tui" ? "tui" : "background";
 	logMessage("in", sourceLabel, prompt);
@@ -539,15 +542,13 @@ export async function sendToOrchestrator(
 
 				// Auto-continue: if the response was cut short by timeout, automatically
 				// send a follow-up "Continue" message so the user doesn't have to
-				if (finalContent.includes("⏱ Response was cut short (timeout)")) {
-					console.log("[nzb] Auto-continuing after timeout…");
-					// Notify user that auto-continue is happening
-					if (source.type === "telegram") {
-						try {
-							const { sendProactiveMessage } = await import("../telegram/bot.js");
-							await sendProactiveMessage("🔄 Auto-continuing...");
-						} catch {}
-					}
+				if (
+					finalContent.includes("⏱ Response was cut short (timeout)") &&
+					_autoContinueCount < MAX_AUTO_CONTINUE
+				) {
+					console.log(
+						`[nzb] Auto-continuing after timeout (${_autoContinueCount + 1}/${MAX_AUTO_CONTINUE})…`,
+					);
 					await sleep(1000);
 					void sendToOrchestrator(
 						"Continue from where you left off. Do not repeat what was already said.",
@@ -555,6 +556,7 @@ export async function sendToOrchestrator(
 						callback,
 						onToolEvent,
 						onUsage,
+						_autoContinueCount + 1,
 					);
 				}
 				return;
