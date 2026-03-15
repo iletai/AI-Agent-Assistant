@@ -295,12 +295,12 @@ export function createBot(): Bot {
 		let lastEditedText = "";
 		let currentToolName: string | undefined;
 		const toolHistory: { name: string; startTime: number; durationMs?: number }[] = [];
-		let usageInfo: { inputTokens: number; outputTokens: number } | undefined;
+		let usageInfo: { inputTokens: number; outputTokens: number; model?: string; duration?: number } | undefined;
 		let finalized = false;
 		let editChain = Promise.resolve();
-		const EDIT_INTERVAL_MS = 5000;
+		const EDIT_INTERVAL_MS = 3000;
 		// Minimum character delta before sending an edit — avoids wasting API calls on tiny changes
-		const MIN_EDIT_DELTA = 100;
+		const MIN_EDIT_DELTA = 50;
 		// Minimum time before showing the first placeholder, so user sees "typing" first
 		const FIRST_PLACEHOLDER_DELAY_MS = 1500;
 		const handlerStartTime = Date.now();
@@ -411,7 +411,14 @@ export function createBot(): Bot {
 
 						let textWithMeta = text;
 						if (usageInfo) {
-							textWithMeta += `\n\n📊 ${usageInfo.inputTokens} in → ${usageInfo.outputTokens} out`;
+							const fmtTokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+							const parts: string[] = [];
+							if (usageInfo.model) parts.push(usageInfo.model);
+							parts.push(`⬆${fmtTokens(usageInfo.inputTokens)} ⬇${fmtTokens(usageInfo.outputTokens)}`);
+							const totalTokens = usageInfo.inputTokens + usageInfo.outputTokens;
+							parts.push(`Σ${fmtTokens(totalTokens)}`);
+							if (usageInfo.duration) parts.push(`${(usageInfo.duration / 1000).toFixed(1)}s`);
+							textWithMeta += `\n\n📊 ${parts.join(" · ")}`;
 						}
 						const formatted = toTelegramMarkdown(textWithMeta);
 						let fullFormatted = formatted;

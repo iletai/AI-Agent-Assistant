@@ -40,6 +40,8 @@ export type ToolEventCallback = (event: ToolEvent) => void;
 export type UsageInfo = {
 	inputTokens: number;
 	outputTokens: number;
+	model?: string;
+	duration?: number;
 };
 
 export type UsageCallback = (usage: UsageInfo) => void;
@@ -380,11 +382,15 @@ async function executeOnSession(
 	const unsubUsage = session.on("assistant.usage", (event: any) => {
 		const inputTokens = event?.data?.inputTokens || 0;
 		const outputTokens = event?.data?.outputTokens || 0;
-		onUsage?.({ inputTokens, outputTokens });
+		const model = event?.data?.model || undefined;
+		const duration = event?.data?.duration || undefined;
+		onUsage?.({ inputTokens, outputTokens, model, duration });
 	});
 
 	try {
 		const result = await session.sendAndWait({ prompt }, 60_000);
+		// Allow late-arriving events (e.g. assistant.usage) to be processed
+		await new Promise((r) => setTimeout(r, 150));
 		const finalContent = result?.data?.content || accumulated || "(No response)";
 		return finalContent;
 	} catch (err) {
