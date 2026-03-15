@@ -122,7 +122,6 @@ const CATEGORY_ICONS: Record<string, string> = {
 };
 
 function formatMemoryList(memories: { id: number; category: string; content: string }[]): string {
-	// Group by category
 	const groups: Record<string, typeof memories> = {};
 	for (const m of memories) {
 		(groups[m.category] ??= []).push(m);
@@ -130,10 +129,13 @@ function formatMemoryList(memories: { id: number; category: string; content: str
 	const sections = Object.entries(groups).map(([cat, items]) => {
 		const icon = CATEGORY_ICONS[cat] || "📝";
 		const header = `${icon} ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-		const lines = items.map((m) => `  #${m.id} ${m.content}`);
+		const lines = items.map((m) => {
+			const short = m.content.length > 60 ? m.content.slice(0, 57) + "…" : m.content;
+			return `  → #${m.id} ${short}`;
+		});
 		return `${header}\n${lines.join("\n")}`;
 	});
-	return `🧠 Memory (${memories.length})\n\n${sections.join("\n\n")}`;
+	return `🧠 ${memories.length} memories\n\n${sections.join("\n\n")}`;
 }
 
 export function createBot(): Bot {
