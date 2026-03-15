@@ -266,6 +266,11 @@ export function createBot(): Bot {
 		const msgPreview = ctx.message.text.length > 80 ? ctx.message.text.slice(0, 80) + "…" : ctx.message.text;
 		void logInfo(`📩 Message: ${msgPreview}`);
 
+		// React with 👀 to acknowledge message received
+		try {
+			await ctx.react("👀");
+		} catch { /* reactions may not be available */ }
+
 		// Typing indicator — keeps sending "typing" action every 4s until the final
 		// response is delivered. We use bot.api directly for reliability, and await the
 		// first call so the user sees typing immediately before any async work begins.
@@ -442,10 +447,12 @@ export function createBot(): Bot {
 						if (placeholderMsgId && chunks.length === 1) {
 							try {
 								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "MarkdownV2" });
+								try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
 								return;
 							} catch {
 								try {
 									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0]);
+									try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
 									return;
 								} catch {
 									/* fall through to send new messages */
@@ -493,6 +500,10 @@ export function createBot(): Bot {
 								/* ignore — placeholder stays but user has the real message */
 							}
 						}
+						// React ✅ on the user's original message to signal completion
+						try {
+							await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]);
+						} catch { /* reactions may not be available */ }
 					});
 				} else {
 					// Progressive streaming: update placeholder periodically with delta threshold
