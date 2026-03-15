@@ -389,8 +389,16 @@ export function createBot(): Bot {
 			usageInfo = usage;
 		};
 
+		// If user replies to a message, include that message's text as context
+		let userPrompt = ctx.message.text;
+		const replyMsg = ctx.message.reply_to_message;
+		if (replyMsg && "text" in replyMsg && replyMsg.text) {
+			const quoted = replyMsg.text.length > 500 ? replyMsg.text.slice(0, 500) + "…" : replyMsg.text;
+			userPrompt = `[Replying to: "${quoted}"]\n\n${userPrompt}`;
+		}
+
 		sendToOrchestrator(
-			ctx.message.text,
+			userPrompt,
 			{ type: "telegram", chatId, messageId: userMessageId },
 			(text: string, done: boolean) => {
 				if (done) {
