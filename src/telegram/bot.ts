@@ -1,6 +1,7 @@
 
 import { autoRetry } from "@grammyjs/auto-retry";
-import { Bot, InlineKeyboard } from "grammy";
+import { Menu } from "@grammyjs/menu";
+import { Bot } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistEnvVar, persistModel } from "../config.js";
 import type { ToolEventCallback, UsageCallback } from "../copilot/orchestrator.js";
@@ -14,18 +15,99 @@ import { initLogChannel, logDebug, logError, logInfo } from "./log-channel.js";
 let bot: Bot | undefined;
 const startedAt = Date.now();
 
-// Inline keyboard menu for quick actions
-const mainMenu = new InlineKeyboard()
-	.text("📊 Status", "action:status")
-	.text("🤖 Model", "action:model")
+// Helper: build uptime string
+function getUptimeStr(): string {
+	const uptime = Math.floor((Date.now() - startedAt) / 1000);
+	const hours = Math.floor(uptime / 3600);
+	const minutes = Math.floor((uptime % 3600) / 60);
+	const seconds = uptime % 60;
+	return hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+// Settings sub-menu
+const settingsMenu = new Menu("settings-menu")
+	.text(
+		(ctx) => `${config.showReasoning ? "✅" : "❌"} Show Reasoning`,
+		async (ctx) => {
+			config.showReasoning = !config.showReasoning;
+			persistEnvVar("SHOW_REASONING", config.showReasoning ? "true" : "false");
+			ctx.menu.update();
+			await ctx.answerCallbackQuery(`Reasoning ${config.showReasoning ? "ON" : "OFF"}`);
+		},
+	)
 	.row()
-	.text("👥 Workers", "action:workers")
-	.text("🧠 Skills", "action:skills")
+	.back("🔙 Back", async (ctx) => {
+		await ctx.editMessageText("NZB Menu:");
+	});
+
+// Main interactive menu with navigation
+const mainMenu = new Menu("main-menu")
+	.text("📊 Status", async (ctx) => {
+		const workers = Array.from(getWorkers().values());
+		const lines = [
+			"📊 NZB Status",
+			`Model: ${config.copilotModel}`,
+			`Uptime: ${getUptimeStr()}`,
+			`Workers: ${workers.length} active`,
+			`Queue: ${getQueueSize()} pending`,
+		];
+		await ctx.answerCallbackQuery();
+		await ctx.reply(lines.join("\n"));
+	})
+	.text("🤖 Model", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		await ctx.reply(`Current model: ${config.copilotModel}`);
+	})
 	.row()
-	.text("🗂 Memory", "action:memory")
-	.text("⚙️ Settings", "action:settings")
+	.text("👥 Workers", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const workers = Array.from(getWorkers().values());
+		if (workers.length === 0) {
+			await ctx.reply("No active worker sessions.");
+		} else {
+			const lines = workers.map((w) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
+			await ctx.reply(lines.join("\n"));
+		}
+	})
+	.text("🧠 Skills", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const skills = listSkills();
+		if (skills.length === 0) {
+			await ctx.reply("No skills installed.");
+		} else {
+			const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
+			await ctx.reply(lines.join("\n"));
+		}
+	})
 	.row()
-	.text("❌ Cancel", "action:cancel");
+	.text("🗂 Memory", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const memories = searchMemories(undefined, undefined, 50);
+		if (memories.length === 0) {
+			await ctx.reply("No memories stored.");
+		} else {
+			const lines = memories.map((m) => `#${m.id} [${m.category}] ${m.content}`);
+			await ctx.reply(lines.join("\n") + `\n\n${memories.length} total`);
+		}
+	})
+	.submenu("⚙️ Settings", "settings-menu", async (ctx) => {
+		await ctx.editMessageText(
+			"⚙️ Settings\n\n" +
+				`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n` +
+				`  └ Hiển thị tools đã dùng + thời gian cuối mỗi phản hồi\n\n` +
+				`🤖 Model: ${config.copilotModel}\n` +
+				`  └ Dùng /model <name> để đổi`,
+		);
+	})
+	.row()
+	.text("❌ Cancel", async (ctx) => {
+		await ctx.answerCallbackQuery();
+		const cancelled = await cancelCurrentMessage();
+		await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
+	});
+
+// Register sub-menu as child
+mainMenu.register(settingsMenu);
 
 // Direct-connection HTTPS agent for Telegram API requests.
 // This bypasses corporate proxy (HTTP_PROXY/HTTPS_PROXY env vars) without
@@ -63,6 +145,9 @@ export function createBot(): Bot {
 		}
 		await next();
 	});
+
+	// Register interactive menu plugin
+	bot.use(mainMenu);
 
 	// /start and /help — with inline menu
 	bot.command("start", (ctx) =>
@@ -171,96 +256,17 @@ export function createBot(): Bot {
 		}, 500);
 	});
 
-	// /settings — show toggleable settings with inline keyboard
-	const buildSettingsKeyboard = () =>
-		new InlineKeyboard()
-			.text(`${config.showReasoning ? "✅" : "❌"} Show Reasoning`, "setting:toggle:reasoning")
-			.row()
-			.text("🔙 Back to Menu", "action:menu");
-
-	const buildSettingsText = () =>
-		"⚙️ Settings\n\n" +
-		`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n` +
-		`  └ Hiển thị tools đã dùng + thời gian cuối mỗi phản hồi\n\n` +
-		`🤖 Model: ${config.copilotModel}\n` +
-		`  └ Dùng /model <name> để đổi`;
-
 	bot.command("settings", async (ctx) => {
-		await ctx.reply(buildSettingsText(), { reply_markup: buildSettingsKeyboard() });
+		await ctx.reply(
+			"⚙️ Settings\n\n" +
+				`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n` +
+				`  └ Hiển thị tools đã dùng + thời gian cuối mỗi phản hồi\n\n` +
+				`🤖 Model: ${config.copilotModel}\n` +
+				`  └ Dùng /model <name> để đổi`,
+			{ reply_markup: settingsMenu },
+		);
 	});
 
-	// Callback query handlers for inline menu buttons
-	bot.callbackQuery("action:status", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		const uptime = Math.floor((Date.now() - startedAt) / 1000);
-		const hours = Math.floor(uptime / 3600);
-		const minutes = Math.floor((uptime % 3600) / 60);
-		const seconds = uptime % 60;
-		const uptimeStr =
-			hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-		const workers = Array.from(getWorkers().values());
-		const lines = [
-			"📊 NZB Status",
-			`Model: ${config.copilotModel}`,
-			`Uptime: ${uptimeStr}`,
-			`Workers: ${workers.length} active`,
-			`Queue: ${getQueueSize()} pending`,
-		];
-		await ctx.reply(lines.join("\n"));
-	});
-	bot.callbackQuery("action:model", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		await ctx.reply(`Current model: ${config.copilotModel}`);
-	});
-	bot.callbackQuery("action:workers", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		const workers = Array.from(getWorkers().values());
-		if (workers.length === 0) {
-			await ctx.reply("No active worker sessions.");
-		} else {
-			const lines = workers.map((w) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
-			await ctx.reply(lines.join("\n"));
-		}
-	});
-	bot.callbackQuery("action:skills", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		const skills = listSkills();
-		if (skills.length === 0) {
-			await ctx.reply("No skills installed.");
-		} else {
-			const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
-			await ctx.reply(lines.join("\n"));
-		}
-	});
-	bot.callbackQuery("action:memory", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		const memories = searchMemories(undefined, undefined, 50);
-		if (memories.length === 0) {
-			await ctx.reply("No memories stored.");
-		} else {
-			const lines = memories.map((m) => `#${m.id} [${m.category}] ${m.content}`);
-			await ctx.reply(lines.join("\n") + `\n\n${memories.length} total`);
-		}
-	});
-	bot.callbackQuery("action:cancel", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		const cancelled = await cancelCurrentMessage();
-		await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
-	});
-	bot.callbackQuery("action:settings", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		await ctx.reply(buildSettingsText(), { reply_markup: buildSettingsKeyboard() });
-	});
-	bot.callbackQuery("action:menu", async (ctx) => {
-		await ctx.answerCallbackQuery();
-		await ctx.editMessageText("NZB Menu:", { reply_markup: mainMenu });
-	});
-	bot.callbackQuery("setting:toggle:reasoning", async (ctx) => {
-		config.showReasoning = !config.showReasoning;
-		persistEnvVar("SHOW_REASONING", config.showReasoning ? "true" : "false");
-		await ctx.answerCallbackQuery(`Reasoning ${config.showReasoning ? "ON" : "OFF"}`);
-		await ctx.editMessageText(buildSettingsText(), { reply_markup: buildSettingsKeyboard() });
-	});
 
 	// Handle all text messages — progressive streaming with tool event feedback
 	bot.on("message:text", async (ctx) => {
