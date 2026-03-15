@@ -396,11 +396,11 @@ async function executeOnSession(
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 
-		// On timeout, deliver whatever was accumulated instead of retrying from scratch
-		if (/timeout/i.test(msg) && accumulated.length > 0) {
-			console.log(`[nzb] Timeout — delivering ${accumulated.length} chars of partial content`);
-			return accumulated + "\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
-		}
+			// On timeout, deliver whatever was accumulated instead of retrying from scratch
+			if (/timeout/i.test(msg) && accumulated.length > 0) {
+				console.log(`[nzb] Timeout — delivering ${accumulated.length} chars of partial content`);
+				return accumulated + "\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
+			}
 
 		// If the session is broken, invalidate it so it's recreated on next attempt
 		if (/closed|destroy|disposed|invalid|expired|not found/i.test(msg)) {
@@ -518,6 +518,20 @@ export async function sendToOrchestrator(
 					logConversation("assistant", finalContent, sourceLabel);
 				} catch {
 					/* best-effort */
+				}
+
+				// Auto-continue: if the response was cut short by timeout, automatically
+				// send a follow-up "Continue" message so the user doesn't have to
+				if (finalContent.includes("⏱ Response was cut short (timeout)")) {
+					console.log("[nzb] Auto-continuing after timeout…");
+					await sleep(1000);
+					void sendToOrchestrator(
+						"Continue from where you left off. Do not repeat what was already said.",
+						source,
+						callback,
+						onToolEvent,
+						onUsage,
+					);
 				}
 				return;
 			} catch (err) {
