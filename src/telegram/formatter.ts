@@ -131,25 +131,33 @@ export function toTelegramHTML(text: string): string {
 	// 9. Ordered lists: keep as-is (1. 2. 3.)
 
 	// 10. Strikethrough ~~text~~ → <s>
-	out = out.replace(/~~(.+?)~~/g, (_m, inner) => stashToken(`<s>\x00ESC${inner}\x00ESC</s>`));
+	out = out.replace(/~~(.+?)~~/g, (_m, inner) => stashToken(`<s>${escapeHtml(inner)}</s>`));
 
-	// 11. Bold **text** → <b>
-	out = out.replace(/\*\*(.+?)\*\*/g, (_m, inner) => stashToken(`<b>\x00ESC${inner}\x00ESC</b>`));
+	// 11. Bold+italic ***text*** → <b><i>text</i></b>
+	out = out.replace(/\*\*\*(.+?)\*\*\*/g, (_m, inner) => stashToken(`<b><i>${escapeHtml(inner)}</i></b>`));
 
-	// 12. Italic *text* → <i>
-	out = out.replace(/\*(.+?)\*/g, (_m, inner) => stashToken(`<i>\x00ESC${inner}\x00ESC</i>`));
+	// 12. Bold **text** → <b> (inner may contain stash tokens, preserve them)
+	out = out.replace(/\*\*(.+?)\*\*/g, (_m, inner) => {
+		const escaped = escapeHtml(inner.replace(/\x00S\d+\x00/g, (tok: string) => `\x00KEEP${tok}\x00KEEP`));
+		const restored = escaped.replace(/\x00KEEP\x00S(\d+)\x00\x00KEEP/g, (_m2: string, i: string) => stash[+i]);
+		return stashToken(`<b>${restored}</b>`);
+	});
 
-	// 13. Underline __text__ → <u>
-	out = out.replace(/__(.+?)__/g, (_m, inner) => stashToken(`<u>\x00ESC${inner}\x00ESC</u>`));
+	// 13. Italic *text* → <i>
+	out = out.replace(/\*(.+?)\*/g, (_m, inner) => {
+		const escaped = escapeHtml(inner.replace(/\x00S\d+\x00/g, (tok: string) => `\x00KEEP${tok}\x00KEEP`));
+		const restored = escaped.replace(/\x00KEEP\x00S(\d+)\x00\x00KEEP/g, (_m2: string, i: string) => stash[+i]);
+		return stashToken(`<i>${restored}</i>`);
+	});
 
-	// 14. Escape remaining plain text
+	// 14. Underline __text__ → <u>
+	out = out.replace(/__(.+?)__/g, (_m, inner) => stashToken(`<u>${escapeHtml(inner)}</u>`));
+
+	// 15. Escape remaining plain text
 	out = escapeHtml(out);
 
-	// 15. Restore stashed tokens
+	// 16. Restore stashed tokens
 	out = out.replace(/\x00S(\d+)\x00/g, (_m, i) => stash[+i]);
-
-	// 16. Escape inner text of formatting tags (marked with ESC)
-	out = out.replace(/\x00ESC([\s\S]*?)\x00ESC/g, (_m, inner) => escapeHtml(inner));
 
 	// 17. Clean up excessive blank lines
 	out = out.replace(/\n{3,}/g, "\n\n");
