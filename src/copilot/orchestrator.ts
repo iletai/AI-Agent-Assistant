@@ -524,6 +524,13 @@ export async function sendToOrchestrator(
 				// send a follow-up "Continue" message so the user doesn't have to
 				if (finalContent.includes("⏱ Response was cut short (timeout)")) {
 					console.log("[nzb] Auto-continuing after timeout…");
+					// Notify user that auto-continue is happening
+					if (source.type === "telegram") {
+						try {
+							const { sendProactiveMessage } = await import("../telegram/bot.js");
+							await sendProactiveMessage("🔄 Auto-continuing...");
+						} catch {}
+					}
 					await sleep(1000);
 					void sendToOrchestrator(
 						"Continue from where you left off. Do not repeat what was already said.",
