@@ -187,7 +187,7 @@ export function toTelegramMarkdown(text: string): string {
  * Format tool call info as a Telegram MarkdownV2 expandable blockquote.
  * First line (title) is always visible, tool list expands on tap.
  */
-export function formatToolSummaryExpandable(toolCalls: { name: string; durationMs?: number }[]): string {
+export function formatToolSummaryExpandable(toolCalls: { name: string; durationMs?: number; detail?: string }[]): string {
 	if (toolCalls.length === 0) return "";
 
 	const lines = toolCalls.map((t) => {
@@ -196,7 +196,8 @@ export function formatToolSummaryExpandable(toolCalls: { name: string; durationM
 			t.durationMs !== undefined
 				? ` \\(${escapeSegment((t.durationMs / 1000).toFixed(1) + "s")}\\)`
 				: "";
-		return `${escapeSegment("• ")}${name}${dur}`;
+		const detail = t.detail ? `\n>  _${escapeSegment(t.detail.slice(0, 60))}_` : "";
+		return `${escapeSegment("• ")}${name}${dur}${detail}`;
 	});
 
 	const header = escapeSegment("🔧 Tools used:");

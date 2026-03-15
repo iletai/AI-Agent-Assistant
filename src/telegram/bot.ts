@@ -298,7 +298,7 @@ export function createBot(): Bot {
 		let lastEditTime = 0;
 		let lastEditedText = "";
 		let currentToolName: string | undefined;
-		const toolHistory: { name: string; startTime: number; durationMs?: number }[] = [];
+		const toolHistory: { name: string; startTime: number; durationMs?: number; detail?: string }[] = [];
 		let usageInfo: { inputTokens: number; outputTokens: number; model?: string; duration?: number } | undefined;
 		let finalized = false;
 		let editChain = Promise.resolve();
@@ -344,9 +344,9 @@ export function createBot(): Bot {
 		const onToolEvent: ToolEventCallback = (event) => {
 			console.log(`[nzb] Bot received tool event: ${event.type} ${event.toolName}`);
 			if (event.type === "tool_start") {
-				void logDebug(`🔧 Tool start: ${event.toolName}`);
+				void logDebug(`🔧 Tool start: ${event.toolName}${event.detail ? ` — ${event.detail}` : ""}`);
 				currentToolName = event.toolName;
-				toolHistory.push({ name: event.toolName, startTime: Date.now() });
+				toolHistory.push({ name: event.toolName, startTime: Date.now(), detail: event.detail });
 				const existingText = lastEditedText.replace(/^🔧 .*\n\n/, "");
 				enqueueEdit(`🔧 ${event.toolName}\n\n${existingText}`.trim() || `🔧 ${event.toolName}`);
 			} else if (event.type === "tool_complete") {
@@ -431,7 +431,7 @@ export function createBot(): Bot {
 						let fullFormatted = formatted;
 						if (config.showReasoning && toolHistory.length > 0) {
 							const expandable = formatToolSummaryExpandable(
-								toolHistory.map((t) => ({ name: t.name, durationMs: t.durationMs })),
+								toolHistory.map((t) => ({ name: t.name, durationMs: t.durationMs, detail: t.detail })),
 							);
 							fullFormatted += expandable;
 						}
