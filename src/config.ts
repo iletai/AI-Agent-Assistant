@@ -16,6 +16,7 @@ const configSchema = z.object({
 	SHOW_REASONING: z.string().optional(),
 	LOG_CHANNEL_ID: z.string().optional(),
 	NODE_EXTRA_CA_CERTS: z.string().optional(),
+	OPENAI_API_KEY: z.string().optional(),
 });
 
 const raw = configSchema.parse(process.env);
@@ -55,6 +56,7 @@ export const config = {
 	apiPort: parsedPort,
 	logChannelId: parsedLogChannelId,
 	workerTimeoutMs: parsedWorkerTimeout,
+	openaiApiKey: raw.OPENAI_API_KEY,
 	get copilotModel(): string {
 		return _copilotModel;
 	},

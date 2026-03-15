@@ -257,6 +257,21 @@ ${BOLD}╔═══════════════════════�
 		console.log(`\n${DIM}  Skipping Google. You can always set it up later with: nzb setup${RESET}\n`);
 	}
 
+	// ── Voice / Whisper Setup ────────────────────────────────
+	console.log(`${BOLD}━━━ Voice Message Setup (optional) ━━━${RESET}\n`);
+	console.log(`NZB can transcribe voice messages using OpenAI's Whisper API.`);
+	console.log(`You need an OpenAI API key from ${CYAN}https://platform.openai.com/api-keys${RESET}`);
+	console.log();
+
+	const existingOpenaiKey = existing.OPENAI_API_KEY;
+	const openaiKey = await ask(rl, `  OpenAI API Key ${existingOpenaiKey ? `${DIM}(Enter to keep existing)${RESET}` : `${DIM}(Enter to skip)${RESET}`}: `);
+	const finalOpenaiKey = openaiKey.trim() || existingOpenaiKey || "";
+	if (finalOpenaiKey) {
+		console.log(`\n${GREEN}  ✓ Whisper transcription enabled${RESET}\n`);
+	} else {
+		console.log(`\n${DIM}  Skipping voice. Voice messages will be saved but not transcribed.${RESET}\n`);
+	}
+
 	// ── Model picker ─────────────────────────────────────────
 	console.log(`\n${BOLD}━━━ Default Model ━━━${RESET}\n`);
 	console.log(`${DIM}Fetching available models from Copilot...${RESET}`);
@@ -284,6 +299,7 @@ ${BOLD}╔═══════════════════════�
 	if (userId) lines.push(`AUTHORIZED_USER_ID=${userId}`);
 	lines.push(`API_PORT=${apiPort}`);
 	lines.push(`COPILOT_MODEL=${model}`);
+	if (finalOpenaiKey) lines.push(`OPENAI_API_KEY=${finalOpenaiKey}`);
 
 	writeFileSync(ENV_PATH, lines.join("\n") + "\n");
 
