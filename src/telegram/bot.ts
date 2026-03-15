@@ -86,8 +86,7 @@ const mainMenu = new Menu("main-menu")
 		if (memories.length === 0) {
 			await ctx.reply("No memories stored.");
 		} else {
-			const lines = memories.map((m) => `#${m.id} [${m.category}] ${m.content}`);
-			await ctx.reply(lines.join("\n") + `\n\n${memories.length} total`);
+			await ctx.reply(formatMemoryList(memories));
 		}
 	})
 	.submenu("⚙️ Settings", "settings-menu", async (ctx) => {
@@ -113,6 +112,29 @@ mainMenu.register(settingsMenu);
 // This bypasses corporate proxy (HTTP_PROXY/HTTPS_PROXY env vars) without
 // modifying process.env, so other services (Copilot SDK, MCP, npm) are unaffected.
 const telegramAgent = new HttpsAgent({ keepAlive: true });
+
+const CATEGORY_ICONS: Record<string, string> = {
+	project: "📦",
+	preference: "⚙️",
+	fact: "💡",
+	person: "👤",
+	routine: "🔄",
+};
+
+function formatMemoryList(memories: { id: number; category: string; content: string }[]): string {
+	// Group by category
+	const groups: Record<string, typeof memories> = {};
+	for (const m of memories) {
+		(groups[m.category] ??= []).push(m);
+	}
+	const sections = Object.entries(groups).map(([cat, items]) => {
+		const icon = CATEGORY_ICONS[cat] || "📝";
+		const header = `${icon} ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
+		const lines = items.map((m) => `  #${m.id} ${m.content}`);
+		return `${header}\n${lines.join("\n")}`;
+	});
+	return `🧠 Memory (${memories.length})\n\n${sections.join("\n\n")}`;
+}
 
 export function createBot(): Bot {
 	if (!config.telegramBotToken) {
@@ -208,8 +230,7 @@ export function createBot(): Bot {
 		if (memories.length === 0) {
 			await ctx.reply("No memories stored.");
 		} else {
-			const lines = memories.map((m) => `#${m.id} [${m.category}] ${m.content}`);
-			await ctx.reply(lines.join("\n") + `\n\n${memories.length} total`);
+			await ctx.reply(formatMemoryList(memories));
 		}
 	});
 	bot.command("skills", async (ctx) => {
