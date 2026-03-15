@@ -1,14 +1,13 @@
 import { approveAll, type CopilotClient, type CopilotSession } from "@github/copilot-sdk";
-import { appendFileSync } from "fs";
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
-	deleteState,
-	getMemorySummary,
-	getRecentConversation,
-	getState,
-	logConversation,
-	setState,
+    deleteState,
+    getMemorySummary,
+    getRecentConversation,
+    getState,
+    logConversation,
+    setState,
 } from "../store/db.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
@@ -27,7 +26,7 @@ export type MessageSource =
 	| { type: "tui"; connectionId: string }
 	| { type: "background" };
 
-export type MessageCallback = (text: string, done: boolean, meta?: { assistantLogId?: number }) => void;
+export type MessageCallback = (text: string, done: boolean, meta?: { assistantLogId?: number }) => void | Promise<void>;
 
 export type ToolEvent = {
 	type: "tool_start" | "tool_complete" | "tool_partial_result";
@@ -536,7 +535,7 @@ export async function sendToOrchestrator(
 				} catch {
 					/* best-effort */
 				}
-				callback(finalContent, true, { assistantLogId });
+				await callback(finalContent, true, { assistantLogId });
 
 				// Auto-continue: if the response was cut short by timeout, automatically
 				// send a follow-up "Continue" message so the user doesn't have to
@@ -581,7 +580,7 @@ export async function sendToOrchestrator(
 				}
 
 				console.error(`[nzb] Error processing message: ${msg}`);
-				callback(`Error: ${msg}`, true);
+				await callback(`Error: ${msg}`, true);
 				return;
 			}
 		}

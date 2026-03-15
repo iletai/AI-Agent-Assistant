@@ -506,8 +506,8 @@ export function createBot(): Bot {
 					const assistantLogId = meta?.assistantLogId;
 					const elapsed = ((Date.now() - handlerStartTime) / 1000).toFixed(1);
 					void logInfo(`✅ Response done (${elapsed}s, ${toolHistory.length} tools, ${text.length} chars)`);
-					// Wait for in-flight edits to finish before sending the final response
-					void editChain.then(async () => {
+					// Return the edit chain so callers can await final delivery
+					return editChain.then(async () => {
 						// Format error messages with a distinct visual
 						const isError = text.startsWith("Error:");
 						if (isError) {
