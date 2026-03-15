@@ -480,10 +480,11 @@ export function createBot(): Bot {
 		sendToOrchestrator(
 			userPrompt,
 			{ type: "telegram", chatId, messageId: userMessageId },
-			(text: string, done: boolean) => {
+			(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
 				if (done) {
 					finalized = true;
 					stopTyping();
+					const assistantLogId = meta?.assistantLogId;
 					const elapsed = ((Date.now() - handlerStartTime) / 1000).toFixed(1);
 					void logInfo(`✅ Response done (${elapsed}s, ${toolHistory.length} tools, ${text.length} chars)`);
 					// Wait for in-flight edits to finish before sending the final response
@@ -536,13 +537,13 @@ export function createBot(): Bot {
 							try {
 								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "MarkdownV2" });
 								try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-								try { const { updateLastAssistantTelegramMsgId } = await import("../store/db.js"); updateLastAssistantTelegramMsgId(placeholderMsgId); } catch {}
+								if (assistantLogId) { try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, placeholderMsgId); } catch {} }
 								return;
 							} catch {
 								try {
 									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0]);
 									try { await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
-									try { const { updateLastAssistantTelegramMsgId } = await import("../store/db.js"); updateLastAssistantTelegramMsgId(placeholderMsgId); } catch {}
+									if (assistantLogId) { try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, placeholderMsgId); } catch {} }
 									return;
 								} catch {
 									/* fall through to send new messages */
@@ -552,6 +553,7 @@ export function createBot(): Bot {
 
 						// Multi-chunk or edit fallthrough: send new chunks FIRST, then delete placeholder
 						const totalChunks = chunks.length;
+						let firstSentMsgId: number | undefined;
 						const sendChunk = async (chunk: string, fallback: string, index: number) => {
 							const isFirst = index === 0 && !placeholderMsgId;
 							// Pagination header for multi-chunk messages
@@ -559,9 +561,10 @@ export function createBot(): Bot {
 							const opts = isFirst
 								? { parse_mode: "MarkdownV2" as const, reply_parameters: replyParams }
 								: { parse_mode: "MarkdownV2" as const };
-							await ctx
+							const sent = await ctx
 								.reply(pageTag + chunk, opts)
 								.catch(() => ctx.reply(pageTag + fallback, isFirst ? { reply_parameters: replyParams } : {}));
+							if (index === 0 && sent) firstSentMsgId = sent.message_id;
 						};
 						let sendSucceeded = false;
 						try {
@@ -575,7 +578,8 @@ export function createBot(): Bot {
 								for (let i = 0; i < fallbackChunks.length; i++) {
 									if (i > 0) await new Promise((r) => setTimeout(r, 300));
 									const pageTag = fallbackChunks.length > 1 ? `📄 ${i + 1}/${fallbackChunks.length}\n` : "";
-									await ctx.reply(pageTag + fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
+									const sent = await ctx.reply(pageTag + fallbackChunks[i], i === 0 ? { reply_parameters: replyParams } : {});
+									if (i === 0 && sent) firstSentMsgId = sent.message_id;
 								}
 								sendSucceeded = true;
 							} catch {
@@ -589,6 +593,11 @@ export function createBot(): Bot {
 							} catch {
 								/* ignore — placeholder stays but user has the real message */
 							}
+						}
+						// Track bot message ID for reply-to context lookups
+						const botMsgId = firstSentMsgId ?? placeholderMsgId;
+						if (assistantLogId && botMsgId) {
+							try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, botMsgId); } catch {}
 						}
 						// React ✅ on the user's original message to signal completion
 						try {
@@ -785,6 +794,20 @@ export function createBot(): Bot {
 			return;
 		}
 
+		// If voice is a reply, include context
+		let voiceReplyContext = "";
+		const voiceReplyMsg = ctx.message.reply_to_message;
+		if (voiceReplyMsg && "text" in voiceReplyMsg && voiceReplyMsg.text) {
+			const { getConversationContext } = await import("../store/db.js");
+			const context = getConversationContext(voiceReplyMsg.message_id);
+			if (context) {
+				voiceReplyContext = `[Continuing from earlier conversation:]\n---\n${context}\n---\n\n`;
+			} else {
+				const quoted = voiceReplyMsg.text.length > 500 ? voiceReplyMsg.text.slice(0, 500) + "…" : voiceReplyMsg.text;
+				voiceReplyContext = `[Replying to: "${quoted}"]\n\n`;
+			}
+		}
+
 		try {
 			const file = await ctx.api.getFile(ctx.message.voice.file_id);
 			const filePath = file.file_path;
@@ -841,29 +864,36 @@ export function createBot(): Bot {
 			}
 
 			sendToOrchestrator(
-				prompt,
+				voiceReplyContext + prompt,
 				{ type: "telegram", chatId, messageId: userMessageId },
-				(text: string, done: boolean) => {
+				(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
 					if (done) {
+						const assistantLogId = meta?.assistantLogId;
 						const formatted = toTelegramMarkdown(text);
 						const chunks = chunkMessage(formatted);
 						const fallbackChunks = chunkMessage(text);
 						void (async () => {
+							let firstMsgId: number | undefined;
 							for (let i = 0; i < chunks.length; i++) {
 								if (i > 0) await new Promise((r) => setTimeout(r, 300));
 								const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
 								try {
-									await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
+									const sent = await ctx.api.sendMessage(chatId, pageTag + chunks[i], {
 										parse_mode: "MarkdownV2",
 										reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
 									});
+									if (i === 0) firstMsgId = sent.message_id;
 								} catch {
 									try {
-										await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
+										const sent = await ctx.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
 											reply_parameters: i === 0 ? { message_id: userMessageId } : undefined,
 										});
+										if (i === 0) firstMsgId = sent.message_id;
 									} catch {}
 								}
+							}
+							if (assistantLogId && firstMsgId) {
+								try { const { setConversationTelegramMsgId } = await import("../store/db.js"); setConversationTelegramMsgId(assistantLogId, firstMsgId); } catch {}
 							}
 							try { await ctx.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]); } catch {}
 						})();

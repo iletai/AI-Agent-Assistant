@@ -27,7 +27,7 @@ export type MessageSource =
 	| { type: "tui"; connectionId: string }
 	| { type: "background" };
 
-export type MessageCallback = (text: string, done: boolean) => void;
+export type MessageCallback = (text: string, done: boolean, meta?: { assistantLogId?: number }) => void;
 
 export type ToolEvent = {
 	type: "tool_start" | "tool_complete" | "tool_partial_result";
@@ -502,13 +502,13 @@ export async function sendToOrchestrator(
 					processQueue();
 				});
 				// Deliver response to user FIRST, then log best-effort
-				callback(finalContent, true);
 				try {
 					logMessage("out", sourceLabel, finalContent);
 				} catch {
 					/* best-effort */
 				}
-				// Log both sides of the conversation after delivery
+				// Log both sides of the conversation before delivery so we have the row ID
+				let assistantLogId: number | undefined;
 				try {
 					const telegramMsgId = source.type === "telegram" ? source.messageId : undefined;
 					logConversation(logRole, prompt, sourceLabel, telegramMsgId);
@@ -516,10 +516,11 @@ export async function sendToOrchestrator(
 					/* best-effort */
 				}
 				try {
-					logConversation("assistant", finalContent, sourceLabel);
+					assistantLogId = logConversation("assistant", finalContent, sourceLabel);
 				} catch {
 					/* best-effort */
 				}
+				callback(finalContent, true, { assistantLogId });
 
 				// Auto-continue: if the response was cut short by timeout, automatically
 				// send a follow-up "Continue" message so the user doesn't have to

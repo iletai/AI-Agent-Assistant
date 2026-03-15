@@ -17,7 +17,6 @@ let stmtCache:
 			removeMemory: Statement;
 			memorySummary: Statement;
 			getConversationByMsgId: Statement;
-			getConversationAround: Statement;
 	  }
 	| undefined;
 
@@ -125,9 +124,6 @@ export function getDb(): Database.Database {
 			removeMemory: db.prepare(`DELETE FROM memories WHERE id = ?`),
 			memorySummary: db.prepare(`SELECT id, category, content FROM memories ORDER BY category, last_accessed DESC`),
 			getConversationByMsgId: db.prepare(`SELECT id FROM conversation_log WHERE telegram_msg_id = ? LIMIT 1`),
-			getConversationAround: db.prepare(
-				`SELECT role, content, source, ts FROM conversation_log WHERE id BETWEEN ? - 4 AND ? + 4 ORDER BY id ASC`,
-			),
 		};
 	}
 	return db;
@@ -150,24 +146,36 @@ export function deleteState(key: string): void {
 	stmtCache!.deleteState.run(key);
 }
 
-/** Log a conversation turn (user, assistant, or system) with optional Telegram message ID. */
-export function logConversation(role: "user" | "assistant" | "system", content: string, source: string, telegramMsgId?: number): void {
+/** Log a conversation turn (user, assistant, or system) with optional Telegram message ID. Returns the row ID. */
+export function logConversation(role: "user" | "assistant" | "system", content: string, source: string, telegramMsgId?: number): number {
 	getDb(); // ensure init
-	stmtCache!.logConversation.run(role, content, source, telegramMsgId ?? null);
+	const result = stmtCache!.logConversation.run(role, content, source, telegramMsgId ?? null);
 	// Keep last 200 entries to support context recovery after session loss
 	logInsertCount++;
 	if (logInsertCount % 50 === 0) {
 		stmtCache!.pruneConversation.run();
 	}
+	return result.lastInsertRowid as number;
 }
 
-/** Get conversation context around a Telegram message ID (±2 turns). */
+/** Get conversation context around a Telegram message ID (±4 rows using proper subquery). */
 export function getConversationContext(telegramMsgId: number): string | undefined {
-	getDb(); // ensure init
+	const db = getDb();
 	const row = stmtCache!.getConversationByMsgId.get(telegramMsgId) as { id: number } | undefined;
 	if (!row) return undefined;
 
-	const rows = stmtCache!.getConversationAround.all(row.id, row.id) as {
+	// Fetch 4 rows before + the target + 4 rows after (handles ID gaps from pruning)
+	const rows = db.prepare(`
+		SELECT role, content, source, ts FROM (
+			SELECT * FROM conversation_log WHERE id < ? ORDER BY id DESC LIMIT 4
+		)
+		UNION ALL
+		SELECT role, content, source, ts FROM conversation_log WHERE id = ?
+		UNION ALL
+		SELECT role, content, source, ts FROM (
+			SELECT * FROM conversation_log WHERE id > ? ORDER BY id ASC LIMIT 4
+		)
+	`).all(row.id, row.id, row.id) as {
 		role: string; content: string; source: string; ts: string;
 	}[];
 	if (rows.length === 0) return undefined;
@@ -181,12 +189,10 @@ export function getConversationContext(telegramMsgId: number): string | undefine
 		.join("\n");
 }
 
-/** Update the most recent assistant log entry with its Telegram message ID (for reply-to lookups). */
-export function updateLastAssistantTelegramMsgId(telegramMsgId: number): void {
+/** Set Telegram message ID on a specific conversation_log row (race-free). */
+export function setConversationTelegramMsgId(rowId: number, telegramMsgId: number): void {
 	const db = getDb();
-	db.prepare(
-		`UPDATE conversation_log SET telegram_msg_id = ? WHERE id = (SELECT id FROM conversation_log WHERE role = 'assistant' ORDER BY id DESC LIMIT 1)`,
-	).run(telegramMsgId);
+	db.prepare(`UPDATE conversation_log SET telegram_msg_id = ? WHERE id = ?`).run(telegramMsgId, rowId);
 }
 
 /** Get recent conversation history formatted for injection into system message. */
