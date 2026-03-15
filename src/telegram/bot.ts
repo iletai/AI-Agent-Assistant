@@ -3,7 +3,6 @@ import { autoRetry } from "@grammyjs/auto-retry";
 import { Menu } from "@grammyjs/menu";
 import { Bot, InlineKeyboard, Keyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
-import { rmSync } from "fs";
 import { config, persistEnvVar, persistModel } from "../config.js";
 import type { ToolEventCallback, UsageCallback } from "../copilot/orchestrator.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers, sendToOrchestrator } from "../copilot/orchestrator.js";
@@ -11,6 +10,9 @@ import { listSkills } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { searchMemories } from "../store/db.js";
 import { chunkMessage, escapeHtml, formatToolSummaryExpandable, toTelegramHTML } from "./formatter.js";
+import { registerCallbackHandlers } from "./handlers/callbacks.js";
+import { sendFormattedReply } from "./handlers/helpers.js";
+import { registerMediaHandlers } from "./handlers/media.js";
 import { initLogChannel, logDebug, logError, logInfo } from "./log-channel.js";
 
 let bot: Bot | undefined;
@@ -23,59 +25,6 @@ function getUptimeStr(): string {
 	const minutes = Math.floor((uptime % 3600) / 60);
 	const seconds = uptime % 60;
 	return hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-}
-
-/**
- * Send a formatted HTML reply with multi-chunk support and fallback to plain text.
- * Consolidates the repeated toTelegramHTML → chunkMessage → fallback → send pattern.
- */
-async function sendFormattedReply(
-	botInstance: Bot,
-	chatId: number,
-	text: string,
-	opts?: { replyTo?: number; assistantLogId?: number },
-): Promise<number | undefined> {
-	const formatted = toTelegramHTML(text);
-	const chunks = chunkMessage(formatted);
-	const fallbackChunks = chunkMessage(text);
-	let firstMsgId: number | undefined;
-
-	for (let i = 0; i < chunks.length; i++) {
-		if (i > 0) await new Promise((r) => setTimeout(r, 300));
-		const pageTag = chunks.length > 1 ? `📄 ${i + 1}/${chunks.length}\n` : "";
-		const replyParams = i === 0 && opts?.replyTo ? { message_id: opts.replyTo } : undefined;
-		try {
-			const sent = await botInstance.api.sendMessage(chatId, pageTag + chunks[i], {
-				parse_mode: "HTML",
-				reply_parameters: replyParams,
-			});
-			if (i === 0) firstMsgId = sent.message_id;
-		} catch {
-			try {
-				const sent = await botInstance.api.sendMessage(chatId, pageTag + (fallbackChunks[i] ?? chunks[i]), {
-					reply_parameters: replyParams,
-				});
-				if (i === 0) firstMsgId = sent.message_id;
-			} catch {}
-		}
-	}
-
-	if (opts?.assistantLogId && firstMsgId) {
-		try {
-			const { setConversationTelegramMsgId } = await import("../store/db.js");
-			setConversationTelegramMsgId(opts.assistantLogId, firstMsgId);
-		} catch {}
-	}
-	try { await botInstance.api.setMessageReaction(chatId, opts?.replyTo ?? 0, [{ type: "emoji", emoji: "👍" }]); } catch {}
-
-	return firstMsgId;
-}
-
-/** Remove a temp directory after a delay (gives orchestrator time to use the file). */
-function scheduleTempCleanup(dirPath: string, delayMs = 5 * 60_000): void {
-	setTimeout(() => {
-		try { rmSync(dirPath, { recursive: true, force: true }); } catch {}
-	}, delayMs);
 }
 
 // Settings sub-menu
@@ -229,46 +178,8 @@ export function createBot(): Bot {
 	// Register interactive menu plugin
 	bot.use(mainMenu);
 
-	// Callback handlers for contextual inline buttons
-	bot.callbackQuery("retry", async (ctx) => {
-		await ctx.answerCallbackQuery({ text: "Retrying..." });
-		const originalMsg = ctx.callbackQuery.message;
-		if (originalMsg?.reply_to_message && "text" in originalMsg.reply_to_message && originalMsg.reply_to_message.text) {
-			const retryPrompt = originalMsg.reply_to_message.text;
-			const chatId = ctx.chat!.id;
-			sendToOrchestrator(
-				retryPrompt,
-				{ type: "telegram", chatId, messageId: originalMsg.message_id },
-				(text: string, done: boolean) => {
-					if (done) {
-						void (async () => {
-							try {
-								const formatted = toTelegramHTML(text);
-								const chunks = chunkMessage(formatted);
-								await bot!.api.editMessageText(chatId, originalMsg.message_id, chunks[0], { parse_mode: "HTML" });
-							} catch {
-								try { await ctx.reply(text); } catch {}
-							}
-						})();
-					}
-				},
-			);
-		}
-	});
-	bot.callbackQuery("explain_error", async (ctx) => {
-		await ctx.answerCallbackQuery({ text: "Explaining..." });
-		const originalMsg = ctx.callbackQuery.message;
-		if (originalMsg && "text" in originalMsg && originalMsg.text) {
-			const chatId = ctx.chat!.id;
-			sendToOrchestrator(
-				`Explain this error in simple terms and suggest a fix:\n${originalMsg.text}`,
-				{ type: "telegram", chatId, messageId: originalMsg.message_id },
-				(text: string, done: boolean) => {
-					if (done) void sendFormattedReply(bot!, chatId, text);
-				},
-			);
-		}
-	});
+	// Register callback + media handlers from extracted modules
+	registerCallbackHandlers(bot);
 
 	// Persistent reply keyboard — quick actions always visible below chat input
 	const replyKeyboard = new Keyboard()
@@ -730,209 +641,8 @@ export function createBot(): Bot {
 		);
 	});
 
-	// Handle photo messages — download and pass to AI as image description request
-	bot.on("message:photo", async (ctx) => {
-		const chatId = ctx.chat.id;
-		const userMessageId = ctx.message.message_id;
-		const caption = ctx.message.caption || "Describe this image and analyze what you see.";
-		void logInfo(`📸 Photo received: ${caption.slice(0, 80)}`);
-
-		try {
-			await ctx.react("👀");
-		} catch {}
-
-		const photo = ctx.message.photo[ctx.message.photo.length - 1];
-		try {
-			const file = await ctx.api.getFile(photo.file_id);
-			const filePath = file.file_path;
-			if (!filePath) {
-				await ctx.reply("❌ Could not download photo.", { reply_parameters: { message_id: userMessageId } });
-				return;
-			}
-			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
-
-			const { mkdtempSync, writeFileSync } = await import("fs");
-			const { join } = await import("path");
-			const { tmpdir } = await import("os");
-			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-photo-"));
-			const ext = filePath.split(".").pop() || "jpg";
-			const localPath = join(tmpDir, `photo.${ext}`);
-
-			const response = await fetch(url);
-			const buffer = Buffer.from(await response.arrayBuffer());
-			writeFileSync(localPath, buffer);
-			scheduleTempCleanup(tmpDir);
-
-			const prompt = `[User sent a photo saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this image. The file is at ${localPath} — you can use bash to view it with tools if needed.`;
-
-			sendToOrchestrator(
-				prompt,
-				{ type: "telegram", chatId, messageId: userMessageId },
-				(text: string, done: boolean) => {
-					if (done) void sendFormattedReply(bot!, chatId, text, { replyTo: userMessageId });
-				},
-			);
-		} catch (err) {
-			await ctx.reply(`❌ Error processing photo: ${err instanceof Error ? err.message : String(err)}`, {
-				reply_parameters: { message_id: userMessageId },
-			});
-		}
-	});
-
-	// Handle document/file messages — download and pass to AI
-	bot.on("message:document", async (ctx) => {
-		const chatId = ctx.chat.id;
-		const userMessageId = ctx.message.message_id;
-		const doc = ctx.message.document;
-		const caption = ctx.message.caption || `Analyze this file: ${doc.file_name || "unknown"}`;
-		void logInfo(`📄 Document received: ${doc.file_name || "unknown"} (${doc.file_size || 0} bytes)`);
-
-		try {
-			await ctx.react("👀");
-		} catch {}
-
-		// Limit file size to 10MB
-		if (doc.file_size && doc.file_size > 10 * 1024 * 1024) {
-			await ctx.reply("❌ File too large (max 10MB).", { reply_parameters: { message_id: userMessageId } });
-			return;
-		}
-
-		try {
-			const file = await ctx.api.getFile(doc.file_id);
-			const filePath = file.file_path;
-			if (!filePath) {
-				await ctx.reply("❌ Could not download file.", { reply_parameters: { message_id: userMessageId } });
-				return;
-			}
-			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
-
-			const { mkdtempSync, writeFileSync } = await import("fs");
-			const { join } = await import("path");
-			const { tmpdir } = await import("os");
-			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-doc-"));
-			const localPath = join(tmpDir, doc.file_name || "file");
-
-			const response = await fetch(url);
-			const buffer = Buffer.from(await response.arrayBuffer());
-			writeFileSync(localPath, buffer);
-			scheduleTempCleanup(tmpDir);
-
-			const prompt = `[User sent a file: ${doc.file_name || "unknown"} (${doc.file_size || 0} bytes), saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this file. You can read it with bash tools.`;
-
-			sendToOrchestrator(
-				prompt,
-				{ type: "telegram", chatId, messageId: userMessageId },
-				(text: string, done: boolean) => {
-					if (done) void sendFormattedReply(bot!, chatId, text, { replyTo: userMessageId });
-				},
-			);
-		} catch (err) {
-			await ctx.reply(`❌ Error processing file: ${err instanceof Error ? err.message : String(err)}`, {
-				reply_parameters: { message_id: userMessageId },
-			});
-		}
-	});
-
-	// Handle voice messages — download, transcribe via Whisper, send to AI
-	bot.on("message:voice", async (ctx) => {
-		const chatId = ctx.chat.id;
-		const userMessageId = ctx.message.message_id;
-		const duration = ctx.message.voice.duration;
-		void logInfo(`🎤 Voice received: ${duration}s`);
-
-		try {
-			await ctx.react("👀");
-		} catch {}
-
-		// Limit voice duration to 5 minutes
-		if (duration > 300) {
-			await ctx.reply("❌ Voice too long (max 5 min).", { reply_parameters: { message_id: userMessageId } });
-			return;
-		}
-
-		// If voice is a reply, include context
-		let voiceReplyContext = "";
-		const voiceReplyMsg = ctx.message.reply_to_message;
-		if (voiceReplyMsg && "text" in voiceReplyMsg && voiceReplyMsg.text) {
-			const { getConversationContext } = await import("../store/db.js");
-			const context = getConversationContext(voiceReplyMsg.message_id);
-			if (context) {
-				voiceReplyContext = `[Continuing from earlier conversation:]\n---\n${context}\n---\n\n`;
-			} else {
-				const quoted = voiceReplyMsg.text.length > 500 ? voiceReplyMsg.text.slice(0, 500) + "…" : voiceReplyMsg.text;
-				voiceReplyContext = `[Replying to: "${quoted}"]\n\n`;
-			}
-		}
-
-		try {
-			const file = await ctx.api.getFile(ctx.message.voice.file_id);
-			const filePath = file.file_path;
-			if (!filePath) {
-				await ctx.reply("❌ Could not download voice.", { reply_parameters: { message_id: userMessageId } });
-				return;
-			}
-			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
-
-			const { mkdtempSync, writeFileSync } = await import("fs");
-			const { join } = await import("path");
-			const { tmpdir } = await import("os");
-			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-voice-"));
-			const ext = filePath.split(".").pop() || "oga";
-			const localPath = join(tmpDir, `voice.${ext}`);
-
-			const response = await fetch(url);
-			const buffer = Buffer.from(await response.arrayBuffer());
-			writeFileSync(localPath, buffer);
-			scheduleTempCleanup(tmpDir);
-
-			let prompt: string;
-
-			if (config.openaiApiKey) {
-				// Transcribe using OpenAI Whisper API
-				try {
-					const formData = new FormData();
-					formData.append("file", new Blob([buffer], { type: "audio/ogg" }), `voice.${ext}`);
-					formData.append("model", "whisper-1");
-
-					const whisperResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-						method: "POST",
-						headers: { Authorization: `Bearer ${config.openaiApiKey}` },
-						body: formData,
-					});
-
-					if (!whisperResp.ok) {
-						const errText = await whisperResp.text();
-						throw new Error(`Whisper API ${whisperResp.status}: ${errText.slice(0, 200)}`);
-					}
-
-					const result = (await whisperResp.json()) as { text: string };
-					const transcript = result.text?.trim();
-					if (!transcript) {
-						prompt = `[User sent a voice message (${duration}s) but transcription was empty. File saved at: ${localPath}]`;
-					} else {
-						prompt = `[Voice message transcribed (${duration}s)]: ${transcript}`;
-					}
-				} catch (whisperErr) {
-					console.error("[nzb] Whisper transcription failed:", whisperErr instanceof Error ? whisperErr.message : whisperErr);
-					prompt = `[User sent a voice message (${duration}s), saved at: ${localPath}. Transcription failed: ${whisperErr instanceof Error ? whisperErr.message : String(whisperErr)}]`;
-				}
-			} else {
-				prompt = `[User sent a voice message (${duration}s), saved at: ${localPath}. No OPENAI_API_KEY configured for transcription. You can tell the user to set it up in ~/.nzb/.env]`;
-			}
-
-			sendToOrchestrator(
-				voiceReplyContext + prompt,
-				{ type: "telegram", chatId, messageId: userMessageId },
-				(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
-					if (done) void sendFormattedReply(bot!, chatId, text, { replyTo: userMessageId, assistantLogId: meta?.assistantLogId });
-				},
-			);
-		} catch (err) {
-			await ctx.reply(`❌ Error processing voice: ${err instanceof Error ? err.message : String(err)}`, {
-				reply_parameters: { message_id: userMessageId },
-			});
-		}
-	});
+	// Register media handlers (photo, document, voice) from extracted module
+	registerMediaHandlers(bot);
 
 	// Global error handler — prevents unhandled errors from crashing the bot
 	bot.catch((err) => {
