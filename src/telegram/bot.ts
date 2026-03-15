@@ -1,4 +1,5 @@
 
+import { autoRetry } from "@grammyjs/auto-retry";
 import { Bot, InlineKeyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistEnvVar, persistModel } from "../config.js";
@@ -50,6 +51,9 @@ export function createBot(): Bot {
 	});
 	console.log("[nzb] Telegram bot using direct HTTPS agent (proxy bypass)");
 	initLogChannel(bot);
+
+	// Auto-retry on rate limit (429) and server errors (500+)
+	bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 10 }));
 
 	// Auth middleware — only allow the authorized user
 	bot.use(async (ctx, next) => {
