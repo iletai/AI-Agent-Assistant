@@ -30,12 +30,19 @@ export type MessageSource =
 export type MessageCallback = (text: string, done: boolean) => void;
 
 export type ToolEvent = {
-	type: "tool_start" | "tool_complete";
+	type: "tool_start" | "tool_complete" | "tool_partial_result";
 	toolName: string;
 	detail?: string;
 };
 
 export type ToolEventCallback = (event: ToolEvent) => void;
+
+export type UsageInfo = {
+	inputTokens: number;
+	outputTokens: number;
+};
+
+export type UsageCallback = (usage: UsageInfo) => void;
 
 type LogFn = (direction: "in" | "out", source: string, text: string) => void;
 let logMessage: LogFn = () => {};
@@ -74,6 +81,7 @@ type QueuedMessage = {
 	prompt: string;
 	callback: MessageCallback;
 	onToolEvent?: ToolEventCallback;
+	onUsage?: UsageCallback;
 	sourceChannel?: "telegram" | "tui";
 	resolve: (value: string) => void;
 	reject: (err: unknown) => void;
@@ -332,6 +340,7 @@ async function executeOnSession(
 	prompt: string,
 	callback: MessageCallback,
 	onToolEvent?: ToolEventCallback,
+	onUsage?: UsageCallback,
 ): Promise<string> {
 	const session = await ensureOrchestratorSession();
 	currentCallback = callback;
@@ -363,6 +372,16 @@ async function executeOnSession(
 		const errMsg = event?.data?.message || event?.data?.error || "Unknown session error";
 		console.error(`[nzb] Session error event: ${errMsg}`);
 	});
+	const unsubPartialResult = session.on("tool.execution_partial_result", (event: any) => {
+		const toolName = event?.data?.toolName || event?.data?.name || "tool";
+		const partialOutput = event?.data?.partialOutput || "";
+		onToolEvent?.({ type: "tool_partial_result", toolName, detail: partialOutput });
+	});
+	const unsubUsage = session.on("assistant.usage", (event: any) => {
+		const inputTokens = event?.data?.inputTokens || 0;
+		const outputTokens = event?.data?.outputTokens || 0;
+		onUsage?.({ inputTokens, outputTokens });
+	});
 
 	try {
 		const result = await session.sendAndWait({ prompt }, 60_000);
@@ -389,6 +408,8 @@ async function executeOnSession(
 		unsubToolStart();
 		unsubToolDone();
 		unsubError();
+		unsubPartialResult();
+		unsubUsage();
 		currentCallback = undefined;
 	}
 }
@@ -407,7 +428,7 @@ async function processQueue(): Promise<void> {
 		const item = messageQueue.shift()!;
 		currentSourceChannel = item.sourceChannel;
 		try {
-			const result = await executeOnSession(item.prompt, item.callback, item.onToolEvent);
+			const result = await executeOnSession(item.prompt, item.callback, item.onToolEvent, item.onUsage);
 			item.resolve(result);
 		} catch (err) {
 			item.reject(err);
@@ -430,6 +451,7 @@ export async function sendToOrchestrator(
 	source: MessageSource,
 	callback: MessageCallback,
 	onToolEvent?: ToolEventCallback,
+	onUsage?: UsageCallback,
 ): Promise<void> {
 	const sourceLabel = source.type === "telegram" ? "telegram" : source.type === "tui" ? "tui" : "background";
 	logMessage("in", sourceLabel, prompt);
@@ -458,7 +480,7 @@ export async function sendToOrchestrator(
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			try {
 				const finalContent = await new Promise<string>((resolve, reject) => {
-					const item: QueuedMessage = { prompt: taggedPrompt, callback, onToolEvent, sourceChannel, resolve, reject };
+					const item: QueuedMessage = { prompt: taggedPrompt, callback, onToolEvent, onUsage, sourceChannel, resolve, reject };
 					if (source.type === "background") {
 						// Background results go to the back of the queue
 						messageQueue.push(item);

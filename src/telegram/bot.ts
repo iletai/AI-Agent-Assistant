@@ -2,7 +2,7 @@ import { appendFileSync } from "fs";
 import { Bot, InlineKeyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config, persistEnvVar, persistModel } from "../config.js";
-import type { ToolEventCallback } from "../copilot/orchestrator.js";
+import type { ToolEventCallback, UsageCallback } from "../copilot/orchestrator.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers, sendToOrchestrator } from "../copilot/orchestrator.js";
 import { listSkills } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
@@ -295,6 +295,7 @@ export function createBot(): Bot {
 		let lastEditedText = "";
 		let currentToolName: string | undefined;
 		const toolHistory: { name: string; startTime: number; durationMs?: number }[] = [];
+		let usageInfo: { inputTokens: number; outputTokens: number } | undefined;
 		let finalized = false;
 		let editChain = Promise.resolve();
 		const EDIT_INTERVAL_MS = 5000;
@@ -352,6 +353,14 @@ export function createBot(): Bot {
 					}
 				}
 				currentToolName = undefined;
+			} else if (event.type === "tool_partial_result" && event.detail) {
+				const now = Date.now();
+				if (now - lastEditTime >= EDIT_INTERVAL_MS) {
+					lastEditTime = now;
+					const truncated = event.detail.length > 500 ? "⋯\n" + event.detail.slice(-500) : event.detail;
+					const toolLine = `🔧 ${currentToolName || event.toolName}\n\`\`\`\n${truncated}\n\`\`\``;
+					enqueueEdit(toolLine);
+				}
 			}
 		};
 
@@ -366,6 +375,10 @@ export function createBot(): Bot {
 				/* best-effort */
 			}
 		}
+
+		const onUsage: UsageCallback = (usage) => {
+			usageInfo = usage;
+		};
 
 		sendToOrchestrator(
 			ctx.message.text,
@@ -396,7 +409,11 @@ export function createBot(): Bot {
 							return;
 						}
 
-						const formatted = toTelegramMarkdown(text);
+						let textWithMeta = text;
+						if (usageInfo) {
+							textWithMeta += `\n\n📊 ${usageInfo.inputTokens} in → ${usageInfo.outputTokens} out`;
+						}
+						const formatted = toTelegramMarkdown(textWithMeta);
 						let fullFormatted = formatted;
 						try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} FINAL showReasoning=${config.showReasoning} toolHistory=${toolHistory.length}\n`); } catch {}
 						if (config.showReasoning && toolHistory.length > 0) {
@@ -408,7 +425,7 @@ export function createBot(): Bot {
 							try { appendFileSync("/tmp/nzb-tool-debug.log", `${new Date().toISOString()} FULL_LAST200=${JSON.stringify(fullFormatted.slice(-200))}\n`); } catch {}
 						}
 						const chunks = chunkMessage(fullFormatted);
-						const fallbackChunks = chunkMessage(text);
+						const fallbackChunks = chunkMessage(textWithMeta);
 
 						// Single chunk: edit placeholder in place
 						if (placeholderMsgId && chunks.length === 1) {
@@ -481,6 +498,7 @@ export function createBot(): Bot {
 				}
 			},
 			onToolEvent,
+			onUsage,
 		);
 	});
 
