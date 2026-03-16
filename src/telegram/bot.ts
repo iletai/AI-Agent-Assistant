@@ -741,6 +741,14 @@ export async function startBot(): Promise<void> {
 
 	bot
 		.start({
+			allowed_updates: [
+				"message",
+				"edited_message",
+				"callback_query",
+				"inline_query",
+				"message_reaction",
+				"my_chat_member",
+			],
 			onStart: () => {
 				console.log("[nzb] Telegram bot connected");
 				void logInfo(`🚀 NZB v${process.env.npm_package_version || "?"} started (model: ${config.copilotModel})`);
