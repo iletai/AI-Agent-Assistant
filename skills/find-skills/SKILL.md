@@ -5,7 +5,7 @@ description: Helps users discover agent skills when they ask questions like "how
 
 # Find Skills
 
-Discover and install skills from the open agent skills ecosystem at https://skills.sh/.
+Discover and install skills from the open agent skills ecosystem at <https://skills.sh/>.
 
 ## When to Use
 
@@ -51,7 +51,7 @@ Replace `QUERY` with a URL-encoded search term (e.g., `react`, `email`, `pr+revi
 web_fetch url="https://skills.sh/audits"
 ```
 
-If `web_fetch` fails or returns unexpected content, still present the search results but show "⚠️ Audit unavailable" for all security columns and include a link to https://skills.sh/audits so the user can check manually.
+If `web_fetch` fails or returns unexpected content, still present the search results but show "⚠️ Audit unavailable" for all security columns and include a link to <https://skills.sh/audits> so the user can check manually.
 
 This returns markdown where each skill has a heading (`### skill-name`) followed by its source, then three security scores:
 
@@ -76,6 +76,7 @@ Cross-reference the search results with the audit data and format as a numbered 
 ```
 
 **Formatting:**
+
 - Sort by installs descending
 - Format counts: 1000+ → "1.0K", 1000000+ → "1.0M"
 - ✅ for Safe / Low Risk / 0 alerts, ⚠️ for Med Risk, 🔴 for High Risk / Critical / 1+ alerts
@@ -122,9 +123,9 @@ curl -fsSL "https://raw.githubusercontent.com/{source}/master/{skillId}/SKILL.md
 
 If both fail, tell the user and link to `https://github.com/{source}`.
 
-2. **Validate** the fetched content: it must not be empty and should contain meaningful instructions (more than just a title). If the content is empty, an HTML error page, or clearly not a SKILL.md, do NOT install — tell the user it couldn't be fetched properly.
+1. **Validate** the fetched content: it must not be empty and should contain meaningful instructions (more than just a title). If the content is empty, an HTML error page, or clearly not a SKILL.md, do NOT install — tell the user it couldn't be fetched properly.
 
-3. **Install** using the `learn_skill` tool:
+2. **Install** using the `learn_skill` tool:
    - `slug`: the `skillId` from the API
    - `name`: from the SKILL.md frontmatter `name:` field (between `---` markers). If no frontmatter, use `skillId`.
    - `description`: from the SKILL.md frontmatter `description:` field. If none, use the first sentence.

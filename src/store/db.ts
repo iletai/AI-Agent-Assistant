@@ -211,6 +211,15 @@ export function setConversationTelegramMsgId(rowId: number, telegramMsgId: numbe
 	db.prepare(`UPDATE conversation_log SET telegram_msg_id = ? WHERE id = ?`).run(telegramMsgId, rowId);
 }
 
+/** Look up conversation content by Telegram message ID. Returns the message content or undefined. */
+export function getConversationByTelegramMsgId(telegramMsgId: number): string | undefined {
+	const db = getDb();
+	const row = db
+		.prepare(`SELECT content FROM conversation_log WHERE telegram_msg_id = ? LIMIT 1`)
+		.get(telegramMsgId) as { content: string } | undefined;
+	return row?.content;
+}
+
 /** Get recent conversation history formatted for injection into system message. */
 export function getRecentConversation(limit = 20): string {
 	const db = getDb();

@@ -11,7 +11,10 @@ import { searchMemories } from "../store/db.js";
 import { chunkMessage, escapeHtml, formatToolSummaryExpandable, toTelegramHTML } from "./formatter.js";
 import { registerCallbackHandlers } from "./handlers/callbacks.js";
 import { sendFormattedReply } from "./handlers/helpers.js";
+import { registerInlineQueryHandler } from "./handlers/inline.js";
 import { registerMediaHandlers } from "./handlers/media.js";
+import { getReactionHelpText, registerReactionHandlers } from "./handlers/reactions.js";
+import { createSmartSuggestionsWithContext, registerSmartSuggestionHandlers } from "./handlers/suggestions.js";
 import { initLogChannel, logDebug, logError, logInfo } from "./log-channel.js";
 
 let bot: Bot | undefined;
@@ -180,6 +183,15 @@ export function createBot(): Bot {
 	// Register callback + media handlers from extracted modules
 	registerCallbackHandlers(bot);
 
+	// 🚀 Breakthrough: Inline Query Mode — @bot in any chat
+	registerInlineQueryHandler(bot);
+
+	// 🚀 Breakthrough: Smart Suggestion button callbacks
+	registerSmartSuggestionHandlers(bot);
+
+	// 🚀 Breakthrough: Reaction-based AI actions
+	registerReactionHandlers(bot);
+
 	// Persistent reply keyboard — quick actions always visible below chat input
 	const replyKeyboard = new Keyboard()
 		.text("📊 Status")
@@ -209,7 +221,12 @@ export function createBot(): Bot {
 				"/status — Show system status\n" +
 				"/settings — Bot settings\n" +
 				"/restart — Restart NZB\n" +
-				"/help — Show this help",
+				"/help — Show this help\n\n" +
+				"⚡ Breakthrough Features:\n" +
+				"• @bot query — Use me inline in any chat!\n" +
+				"• React to any message to trigger AI:\n" +
+				getReactionHelpText() + "\n" +
+				"• Smart suggestions appear after each response",
 			{ reply_markup: mainMenu },
 		),
 	);
@@ -552,10 +569,16 @@ export function createBot(): Bot {
 						const chunks = chunkMessage(fullFormatted);
 						const fallbackChunks = chunkMessage(textWithMeta);
 
+						// 🚀 Breakthrough: Build smart suggestion buttons based on response content
+						const smartKb = createSmartSuggestionsWithContext(text, ctx.message.text, 4);
+
 						// Single chunk: edit placeholder in place
 						if (placeholderMsgId && chunks.length === 1) {
 							try {
-								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], { parse_mode: "HTML" });
+								await bot!.api.editMessageText(chatId, placeholderMsgId, chunks[0], {
+									parse_mode: "HTML",
+									reply_markup: smartKb,
+								});
 								try {
 									await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]);
 								} catch {}
@@ -568,7 +591,9 @@ export function createBot(): Bot {
 								return;
 							} catch {
 								try {
-									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0]);
+									await bot!.api.editMessageText(chatId, placeholderMsgId, fallbackChunks[0], {
+										reply_markup: smartKb,
+									});
 									try {
 										await bot!.api.setMessageReaction(chatId, userMessageId, [{ type: "emoji", emoji: "👍" }]);
 									} catch {}
@@ -590,14 +615,21 @@ export function createBot(): Bot {
 						let firstSentMsgId: number | undefined;
 						const sendChunk = async (chunk: string, fallback: string, index: number) => {
 							const isFirst = index === 0 && !placeholderMsgId;
+							const isLast = index === totalChunks - 1;
 							// Pagination header for multi-chunk messages
 							const pageTag = totalChunks > 1 ? `📄 ${index + 1}/${totalChunks}\n` : "";
-							const opts = isFirst
-								? { parse_mode: "HTML" as const, reply_parameters: replyParams }
-								: { parse_mode: "HTML" as const };
+							const opts = {
+								parse_mode: "HTML" as const,
+								...(isFirst ? { reply_parameters: replyParams } : {}),
+								...(isLast && smartKb ? { reply_markup: smartKb } : {}),
+							};
+							const fallbackOpts = {
+								...(isFirst ? { reply_parameters: replyParams } : {}),
+								...(isLast && smartKb ? { reply_markup: smartKb } : {}),
+							};
 							const sent = await ctx
 								.reply(pageTag + chunk, opts)
-								.catch(() => ctx.reply(pageTag + fallback, isFirst ? { reply_parameters: replyParams } : {}));
+								.catch(() => ctx.reply(pageTag + fallback, fallbackOpts));
 							if (index === 0 && sent) firstSentMsgId = sent.message_id;
 						};
 						let sendSucceeded = false;
