@@ -37,7 +37,7 @@ if (Number.isNaN(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
 	throw new Error(`API_PORT must be 1-65535, got: "${raw.API_PORT}"`);
 }
 
-const DEFAULT_WORKER_TIMEOUT_MS = 600_000; // 10 minutes
+const DEFAULT_WORKER_TIMEOUT_MS = 1_200_000; // 20 minutes
 const parsedWorkerTimeout = raw.WORKER_TIMEOUT ? Number(raw.WORKER_TIMEOUT) : DEFAULT_WORKER_TIMEOUT_MS;
 
 if (!Number.isInteger(parsedWorkerTimeout) || parsedWorkerTimeout <= 0) {
