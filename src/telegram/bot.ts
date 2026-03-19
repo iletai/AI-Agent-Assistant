@@ -29,17 +29,78 @@ function getUptimeStr(): string {
 	return hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+// Worker timeout presets (ms → display label)
+const TIMEOUT_PRESETS = [
+	{ ms: 600_000, label: "10min" },
+	{ ms: 1_200_000, label: "20min" },
+	{ ms: 1_800_000, label: "30min" },
+	{ ms: 3_600_000, label: "60min" },
+	{ ms: 7_200_000, label: "120min" },
+];
+
+const MODEL_PRESETS = [
+	"claude-sonnet-4-20250514",
+	"claude-haiku-4-20250414",
+	"claude-opus-4-20250115",
+];
+
+function getTimeoutLabel(): string {
+	const preset = TIMEOUT_PRESETS.find((p) => p.ms === config.workerTimeoutMs);
+	return preset ? preset.label : `${Math.round(config.workerTimeoutMs / 60_000)}min`;
+}
+
+function buildSettingsText(): string {
+	return (
+		"⚙️ Settings\n\n" +
+		`⏱ Worker Timeout: ${getTimeoutLabel()}\n` +
+		`🤖 Model: ${config.copilotModel}\n` +
+		`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n\n` +
+		`📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`
+	);
+}
+
 // Settings sub-menu
 const settingsMenu = new Menu("settings-menu")
 	.text(
-		(ctx) => `${config.showReasoning ? "✅" : "❌"} Show Reasoning`,
+		() => `⏱ Timeout: ${getTimeoutLabel()}`,
+		async (ctx) => {
+			const idx = TIMEOUT_PRESETS.findIndex((p) => p.ms === config.workerTimeoutMs);
+			const next = TIMEOUT_PRESETS[(idx + 1) % TIMEOUT_PRESETS.length];
+			config.workerTimeoutMs = next.ms;
+			persistEnvVar("WORKER_TIMEOUT", String(next.ms));
+			ctx.menu.update();
+			await ctx.editMessageText(buildSettingsText());
+			await ctx.answerCallbackQuery(`Timeout → ${next.label}`);
+		},
+	)
+	.row()
+	.text(
+		() => `🤖 ${config.copilotModel}`,
+		async (ctx) => {
+			const idx = MODEL_PRESETS.indexOf(config.copilotModel);
+			const next = MODEL_PRESETS[(idx + 1) % MODEL_PRESETS.length];
+			config.copilotModel = next;
+			persistModel(next);
+			ctx.menu.update();
+			await ctx.editMessageText(buildSettingsText());
+			await ctx.answerCallbackQuery(`Model → ${next}`);
+		},
+	)
+	.row()
+	.text(
+		() => `${config.showReasoning ? "✅" : "❌"} Show Reasoning`,
 		async (ctx) => {
 			config.showReasoning = !config.showReasoning;
 			persistEnvVar("SHOW_REASONING", config.showReasoning ? "true" : "false");
 			ctx.menu.update();
+			await ctx.editMessageText(buildSettingsText());
 			await ctx.answerCallbackQuery(`Reasoning ${config.showReasoning ? "ON" : "OFF"}`);
 		},
 	)
+	.row()
+	.text(() => `📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`, async (ctx) => {
+		await ctx.answerCallbackQuery(`Uptime: ${getUptimeStr()}`);
+	})
 	.row()
 	.back("🔙 Back", async (ctx) => {
 		await ctx.editMessageText("NZB Menu:");
@@ -95,13 +156,7 @@ const mainMenu = new Menu("main-menu")
 		}
 	})
 	.submenu("⚙️ Settings", "settings-menu", async (ctx) => {
-		await ctx.editMessageText(
-			"⚙️ Settings\n\n" +
-				`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n` +
-				`  └ Hiển thị tools đã dùng + thời gian cuối mỗi phản hồi\n\n` +
-				`🤖 Model: ${config.copilotModel}\n` +
-				`  └ Dùng /model <name> để đổi`,
-		);
+		await ctx.editMessageText(buildSettingsText());
 	})
 	.row()
 	.text("❌ Cancel", async (ctx) => {
@@ -315,14 +370,7 @@ export function createBot(): Bot {
 	});
 
 	bot.command("settings", async (ctx) => {
-		await ctx.reply(
-			"⚙️ Settings\n\n" +
-				`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n` +
-				`  └ Hiển thị tools đã dùng + thời gian cuối mỗi phản hồi\n\n` +
-				`🤖 Model: ${config.copilotModel}\n` +
-				`  └ Dùng /model <name> để đổi`,
-			{ reply_markup: settingsMenu },
-		);
+		await ctx.reply(buildSettingsText(), { reply_markup: settingsMenu });
 	});
 
 	// Reply keyboard button handlers — intercept before general text handler
