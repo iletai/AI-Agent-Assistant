@@ -2,18 +2,20 @@ import { approveAll, type CopilotClient, type CopilotSession } from "@github/cop
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
+    completeTeam,
     deleteState,
     getMemorySummary,
     getRecentConversation,
     getState,
     logConversation,
     setState,
+    updateTeamMemberResult,
 } from "../store/db.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
 import { getSkillDirectories } from "./skills.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
-import { createTools, type WorkerEvent, type WorkerInfo } from "./tools.js";
+import { createTools, type TeamInfo, type WorkerEvent, type WorkerInfo } from "./tools.js";
 
 const MAX_RETRIES = 2;
 const RECONNECT_DELAYS_MS = [1_000, 5_000];
@@ -70,6 +72,7 @@ export function setWorkerNotify(fn: WorkerNotifyFn): void {
 
 let copilotClient: CopilotClient | undefined;
 const workers = new Map<string, WorkerInfo>();
+const teams = new Map<string, TeamInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
 
 // Persistent orchestrator session
@@ -108,6 +111,7 @@ function getSessionConfig() {
 		cachedTools = createTools({
 			client: copilotClient!,
 			workers,
+			teams,
 			onWorkerComplete: feedBackgroundResult,
 			onWorkerEvent: (event) => {
 				const worker = workers.get(event.name);
@@ -128,7 +132,50 @@ function getSessionConfig() {
 export function feedBackgroundResult(workerName: string, result: string): void {
 	const worker = workers.get(workerName);
 	const channel = worker?.originChannel;
-	console.log(`[nzb] Feeding background result from worker '${workerName}' (channel: ${channel ?? "none"})`);
+	const teamId = worker?.teamId;
+
+	console.log(
+		`[nzb] Feeding background result from worker '${workerName}' (channel: ${channel ?? "none"}, team: ${teamId ?? "none"})`,
+	);
+
+	// If this worker is part of a team, handle team aggregation
+	if (teamId) {
+		const team = teams.get(teamId);
+		if (team) {
+			const status = result.startsWith("Error:") ? "error" : "completed";
+			updateTeamMemberResult(teamId, workerName, result, status as "completed" | "error");
+
+			team.completedMembers.add(workerName);
+			team.memberResults.set(workerName, result);
+
+			// Check if all members completed
+			if (team.completedMembers.size >= team.members.length) {
+				const aggregated = Array.from(team.memberResults.entries())
+					.map(([name, res]) => `## ${name}\n${res}`)
+					.join("\n\n---\n\n");
+
+				completeTeam(teamId, aggregated);
+
+				const prompt =
+					`[Agent Team Completed] Team '${teamId}' finished.\n\n` +
+					`Task: ${team.taskDescription}\n\n` +
+					`${team.members.length} members completed:\n\n${aggregated}\n\n` +
+					`Please synthesize these results into a coherent summary for the user.`;
+
+				sendToOrchestrator(prompt, { type: "background" }, (_text, done) => {
+					if (done && proactiveNotifyFn) {
+						proactiveNotifyFn(_text, team.originChannel);
+					}
+				});
+
+				// Cleanup team from memory (DB record persists)
+				teams.delete(teamId);
+			}
+			return;
+		}
+	}
+
+	// Non-team worker: original behavior
 	const prompt = `[Background task completed] Worker '${workerName}' finished:\n\n${result}`;
 	sendToOrchestrator(prompt, { type: "background" }, (_text, done) => {
 		if (done && proactiveNotifyFn) {

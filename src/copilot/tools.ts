@@ -38,6 +38,7 @@ const BLOCKED_WORKER_DIRS = [
 ];
 
 const MAX_CONCURRENT_WORKERS = 5;
+const MAX_CONCURRENT_TEAMS = 3;
 
 export interface WorkerInfo {
 	name: string;
@@ -49,6 +50,8 @@ export interface WorkerInfo {
 	startedAt?: number;
 	/** Channel that created this worker — completions route back here. */
 	originChannel?: "telegram" | "tui";
+	/** Team this worker belongs to (if any). */
+	teamId?: string;
 }
 
 export type WorkerEvent =
@@ -57,9 +60,19 @@ export type WorkerEvent =
 	| { type: "completed"; name: string }
 	| { type: "error"; name: string; error: string };
 
+export interface TeamInfo {
+	id: string;
+	taskDescription: string;
+	members: string[];
+	originChannel?: "telegram" | "tui";
+	completedMembers: Set<string>;
+	memberResults: Map<string, string>;
+}
+
 export interface ToolDeps {
 	client: CopilotClient;
 	workers: Map<string, WorkerInfo>;
+	teams: Map<string, TeamInfo>;
 	onWorkerComplete: (name: string, result: string) => void;
 	onWorkerEvent?: (event: WorkerEvent) => void;
 }
@@ -280,6 +293,238 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				db.prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
 
 				return `Worker '${args.name}' terminated.`;
+			},
+		}),
+
+		// ── Agent Team Tools ──────────────────────────────────────────
+
+		defineTool("create_agent_team", {
+			description:
+				"Create an agent team — multiple workers collaborating on a task in parallel. Each member gets a role " +
+				"and works independently. Results are automatically aggregated when all members complete. Use for tasks " +
+				"that benefit from parallel work: code review from multiple angles, investigating competing hypotheses, " +
+				"implementing independent modules, etc.",
+			parameters: z.object({
+				team_name: z.string().describe("Unique name for the team, e.g. 'pr-review-team'"),
+				task_description: z.string().describe("Overall task description shared with all members"),
+				members: z
+					.array(
+						z.object({
+							name: z.string().describe("Unique worker name for this member, e.g. 'security-reviewer'"),
+							role: z.string().describe("Role description, e.g. 'Review code for security vulnerabilities'"),
+							prompt: z.string().describe("Specific prompt/instructions for this member"),
+						}),
+					)
+					.min(2)
+					.max(5)
+					.describe("Team members (2-5). Each gets their own worker session."),
+				working_dir: z.string().describe("Absolute path to working directory for all members"),
+			}),
+			handler: async (args) => {
+				const activeTeams = Array.from(deps.teams.values()).filter(
+					(t) => t.completedMembers.size < t.members.length,
+				);
+				if (activeTeams.length >= MAX_CONCURRENT_TEAMS) {
+					return `❌ Maximum ${MAX_CONCURRENT_TEAMS} concurrent teams reached. Wait for an active team to complete.`;
+				}
+
+				const totalWorkers = deps.workers.size + args.members.length;
+				if (totalWorkers > MAX_CONCURRENT_WORKERS) {
+					return `❌ Adding ${args.members.length} members would exceed max workers (${MAX_CONCURRENT_WORKERS}). Currently ${deps.workers.size} active. Kill some workers first.`;
+				}
+
+				const home = homedir();
+				const resolvedDir = resolve(args.working_dir);
+				for (const blocked of BLOCKED_WORKER_DIRS) {
+					const blockedPath = join(home, blocked);
+					if (resolvedDir === blockedPath || resolvedDir.startsWith(blockedPath + sep)) {
+						return `❌ Working directory '${args.working_dir}' is a sensitive directory. Workers cannot operate in ${blocked}.`;
+					}
+				}
+
+				for (const member of args.members) {
+					if (deps.workers.has(member.name)) {
+						return `❌ Worker '${member.name}' already exists. Use unique names.`;
+					}
+				}
+
+				const teamId = args.team_name;
+				const originChannel = getCurrentSourceChannel();
+
+				const { createTeam: dbCreateTeam, addTeamMember: dbAddTeamMember } = await import(
+					"../store/db.js"
+				);
+				dbCreateTeam(teamId, args.task_description, originChannel);
+
+				const teamInfo: TeamInfo = {
+					id: teamId,
+					taskDescription: args.task_description,
+					members: args.members.map((m) => m.name),
+					originChannel,
+					completedMembers: new Set(),
+					memberResults: new Map(),
+				};
+				deps.teams.set(teamId, teamInfo);
+
+				const spawnResults: string[] = [];
+				for (const member of args.members) {
+					try {
+						const session = await deps.client.createSession({
+							model: config.copilotModel,
+							configDir: SESSIONS_DIR,
+							workingDirectory: args.working_dir,
+							onPermissionRequest: approveAll,
+						});
+
+						const worker: WorkerInfo = {
+							name: member.name,
+							session,
+							workingDir: resolvedDir,
+							status: "running",
+							startedAt: Date.now(),
+							originChannel,
+							teamId,
+						};
+						deps.workers.set(member.name, worker);
+						deps.onWorkerEvent?.({ type: "created", name: member.name, workingDir: resolvedDir });
+
+						const db = getDb();
+						db.prepare(
+							`INSERT OR REPLACE INTO worker_sessions (name, copilot_session_id, working_dir, status) VALUES (?, ?, ?, 'running')`,
+						).run(member.name, session.sessionId, resolvedDir);
+
+						dbAddTeamMember(teamId, member.name, member.role);
+
+						const teamPrompt =
+							`Working directory: ${args.working_dir}\n\n${member.prompt}\n\n` +
+							`Context: You are part of team '${teamId}'. Your role: ${member.role}\n` +
+							`Overall task: ${args.task_description}\n\nProvide your results clearly. Focus on your role.`;
+
+						const timeoutMs = config.workerTimeoutMs;
+						session
+							.sendAndWait({ prompt: teamPrompt }, timeoutMs)
+							.then((result) => {
+								worker.lastOutput = result?.data?.content || "No response";
+								worker.status = "idle";
+								deps.onWorkerEvent?.({ type: "completed", name: member.name });
+								deps.onWorkerComplete(member.name, worker.lastOutput!);
+							})
+							.catch((err) => {
+								const errMsg = formatWorkerError(member.name, worker.startedAt!, timeoutMs, err);
+								worker.lastOutput = errMsg;
+								worker.status = "error";
+								deps.onWorkerEvent?.({ type: "error", name: member.name, error: errMsg });
+								deps.onWorkerComplete(member.name, errMsg);
+							})
+							.finally(() => {
+								session.destroy().catch(() => {});
+								deps.workers.delete(member.name);
+								try {
+									getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(member.name);
+								} catch {}
+							});
+
+						spawnResults.push(`✅ ${member.name} (${member.role})`);
+					} catch (err) {
+						const errMsg = err instanceof Error ? err.message : String(err);
+						spawnResults.push(`❌ ${member.name}: ${errMsg}`);
+					}
+				}
+
+				return (
+					`🏗️ Agent team '${teamId}' created with ${args.members.length} members:\n` +
+					`${spawnResults.join("\n")}\n\n` +
+					`All agents dispatched in parallel. Results will be aggregated automatically when all members complete.`
+				);
+			},
+		}),
+
+		defineTool("get_team_status", {
+			description: "Get the status of agent teams — shows active teams, their members, and progress.",
+			parameters: z.object({
+				team_name: z
+					.string()
+					.optional()
+					.describe("Specific team name to check. Omit to list all active teams."),
+			}),
+			handler: async (args) => {
+				if (args.team_name) {
+					const team = deps.teams.get(args.team_name);
+					if (!team) return `❌ Team '${args.team_name}' not found.`;
+
+					const lines = [
+						`🏗️ Team: ${team.id}`,
+						`📋 Task: ${team.taskDescription}`,
+						`📊 Progress: ${team.completedMembers.size}/${team.members.length}`,
+						"",
+						"Members:",
+					];
+					for (const memberName of team.members) {
+						const worker = deps.workers.get(memberName);
+						const completed = team.completedMembers.has(memberName);
+						const status = completed
+							? "✅ done"
+							: worker?.status === "running"
+								? "⏳ running"
+								: worker?.status === "error"
+									? "❌ error"
+									: "🔄 pending";
+						const elapsed = worker?.startedAt
+							? `${Math.round((Date.now() - worker.startedAt) / 1000)}s`
+							: "";
+						lines.push(`  ${status} ${memberName} ${elapsed}`);
+					}
+					return lines.join("\n");
+				}
+
+				const activeTeams = Array.from(deps.teams.values());
+				if (activeTeams.length === 0) return "No active agent teams.";
+
+				const lines = [`📋 Active teams (${activeTeams.length}):`];
+				for (const team of activeTeams) {
+					lines.push(
+						`  🏗️ ${team.id}: ${team.completedMembers.size}/${team.members.length} done — ${team.taskDescription.slice(0, 80)}`,
+					);
+				}
+				return lines.join("\n");
+			},
+		}),
+
+		defineTool("send_team_message", {
+			description:
+				"Send a message to all active members of a team. Use to provide additional instructions, " +
+				"context, or redirect the team's work.",
+			parameters: z.object({
+				team_name: z.string().describe("Name of the team"),
+				message: z.string().describe("Message to send to all active team members"),
+			}),
+			handler: async (args) => {
+				const team = deps.teams.get(args.team_name);
+				if (!team) return `❌ Team '${args.team_name}' not found.`;
+
+				const activeMembers = team.members.filter(
+					(name) => !team.completedMembers.has(name) && deps.workers.has(name),
+				);
+				if (activeMembers.length === 0)
+					return `❌ No active members in team '${args.team_name}'.`;
+
+				let sent = 0;
+				for (const memberName of activeMembers) {
+					const worker = deps.workers.get(memberName);
+					if (worker && worker.status !== "error") {
+						try {
+							worker.session
+								.sendAndWait(
+									{ prompt: `[Team message from coordinator]: ${args.message}` },
+									60_000,
+								)
+								.catch(() => {});
+							sent++;
+						} catch {}
+					}
+				}
+
+				return `📨 Message sent to ${sent}/${activeMembers.length} active members of team '${args.team_name}'.`;
 			},
 		}),
 

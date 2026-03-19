@@ -54,6 +54,17 @@ Worker tools are **non-blocking** — dispatch and return immediately:
 - Never do complex work yourself — delegate to workers.
 - Only orchestrator turns block the queue.
 
+## Agent Teams
+
+Create agent teams for parallel collaborative work:
+1. Use \`create_agent_team\` to spawn 2-5 specialized workers
+2. Each member works independently with their own role
+3. Results auto-aggregate when all members finish → you get \`[Agent Team Completed]\` → synthesize for user
+4. Use \`get_team_status\` to check progress
+5. Use \`send_team_message\` to broadcast updates
+
+Best for: multi-angle code review, competing debug hypotheses, parallel feature implementation, research from different perspectives.
+
 ## Skills Workflow
 
 1. Search skills.sh first for existing community skills.
