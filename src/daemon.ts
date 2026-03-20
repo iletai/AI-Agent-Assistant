@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { broadcastToSSE, startApiServer } from "./api/server.js";
 import { config } from "./config.js";
 import { getClient, stopClient } from "./copilot/client.js";
@@ -10,6 +11,7 @@ import {
 	setWorkerNotify,
 	stopHealthCheck,
 } from "./copilot/orchestrator.js";
+import { PID_FILE_PATH } from "./paths.js";
 import { closeDb, getDb } from "./store/db.js";
 import { createBot, sendProactiveMessage, sendWorkerNotification, startBot, stopBot } from "./telegram/bot.js";
 import { checkForUpdate } from "./update.js";
@@ -24,8 +26,66 @@ function truncate(text: string, max = 200): string {
 	return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
 }
 
+/**
+ * Check if a process with the given PID is alive.
+ * Sends signal 0 which doesn't kill but checks existence.
+ */
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Acquire a PID lock file. Prevents multiple daemon instances.
+ * Returns true if lock acquired, false if another instance is running.
+ */
+function acquirePidLock(): boolean {
+	if (existsSync(PID_FILE_PATH)) {
+		try {
+			const existingPid = parseInt(readFileSync(PID_FILE_PATH, "utf-8").trim(), 10);
+			if (!isNaN(existingPid) && isProcessAlive(existingPid)) {
+				console.error(`[nzb] Another NZB instance is already running (PID ${existingPid}).`);
+				console.error(`[nzb] Stop it first, or remove ${PID_FILE_PATH} if the process is stale.`);
+				return false;
+			}
+			// Stale PID file — process is dead, remove it
+			console.log(`[nzb] Removed stale PID file (old PID ${existingPid} is no longer running).`);
+		} catch {
+			// Corrupt PID file — remove it
+		}
+		unlinkSync(PID_FILE_PATH);
+	}
+	writeFileSync(PID_FILE_PATH, String(process.pid), { mode: 0o644 });
+	return true;
+}
+
+/** Release the PID lock file. */
+function releasePidLock(): void {
+	try {
+		if (existsSync(PID_FILE_PATH)) {
+			const pid = parseInt(readFileSync(PID_FILE_PATH, "utf-8").trim(), 10);
+			// Only remove if it's our PID (in case a new instance took over)
+			if (pid === process.pid) {
+				unlinkSync(PID_FILE_PATH);
+			}
+		}
+	} catch {
+		/* best effort */
+	}
+}
+
 async function main(): Promise<void> {
 	console.log("[nzb] Starting NZB daemon...");
+
+	// Single-instance guard
+	if (!acquirePidLock()) {
+		process.exit(1);
+	}
+
 	if (config.selfEditEnabled) {
 		console.log("[nzb] Warning: Self-edit mode enabled — NZB can modify his own source code");
 	}
@@ -177,6 +237,7 @@ async function shutdown(): Promise<void> {
 		/* best effort */
 	}
 	closeDb();
+	releasePidLock();
 	console.log("[nzb] Goodbye.");
 	process.exit(0);
 }
@@ -212,6 +273,7 @@ export async function restartDaemon(): Promise<void> {
 		/* best effort */
 	}
 	closeDb();
+	releasePidLock();
 
 	// Spawn a detached replacement process with the same args (include execArgv for tsx/loaders)
 	const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {

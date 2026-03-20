@@ -26,6 +26,9 @@ export const TUI_DEBUG_LOG_PATH = join(NZB_HOME, "tui-debug.log");
 /** Path to the API bearer token file */
 export const API_TOKEN_PATH = join(NZB_HOME, "api-token");
 
+/** Path to the PID lock file for single-instance enforcement */
+export const PID_FILE_PATH = join(NZB_HOME, "nzb.pid");
+
 /** Ensure ~/.nzb/ exists */
 export function ensureNZBHome(): void {
 	mkdirSync(NZB_HOME, { recursive: true });

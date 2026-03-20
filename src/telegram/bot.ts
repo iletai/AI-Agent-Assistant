@@ -829,17 +829,23 @@ export async function startBot(): Promise<void> {
 				void logInfo(`🚀 NZB v${process.env.npm_package_version || "?"} started (model: ${config.copilotModel})`);
 			},
 		})
-		.catch((err: any) => {
+		.catch(async (err: any) => {
 			if (err?.error_code === 401) {
 				console.error(
 					"[nzb] Warning: Telegram bot token is invalid or expired. Run 'nzb setup' and re-enter your bot token from @BotFather.",
 				);
-			} else if (err?.error_code === 409) {
-				console.error(
-					"[nzb] Warning: Another bot instance is already running with this token. Stop the other instance first.",
-				);
+				return; // Unrecoverable — don't retry
+			}
+			if (err?.error_code === 409) {
+				console.error("[nzb] Warning: Telegram polling conflict (409). Restarting polling in 5 seconds...");
 			} else {
-				console.error("[nzb] Error: Telegram bot failed to start:", err?.message || err);
+				console.error("[nzb] Error: Telegram polling stopped:", err?.message || err, "— restarting in 5 seconds...");
+			}
+			// Auto-restart polling after a delay
+			await new Promise((r) => setTimeout(r, 5000));
+			if (bot) {
+				console.log("[nzb] Re-starting Telegram polling...");
+				startBot().catch((e) => console.error("[nzb] Failed to re-start Telegram polling:", e));
 			}
 		});
 }
