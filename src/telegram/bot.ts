@@ -38,11 +38,29 @@ const TIMEOUT_PRESETS = [
 	{ ms: 7_200_000, label: "120min" },
 ];
 
-const MODEL_PRESETS = [
-	"claude-sonnet-4-20250514",
-	"claude-haiku-4-20250414",
-	"claude-opus-4-20250115",
-];
+// Dynamic model list — fetched from Copilot SDK, cached for 5 minutes
+let cachedModels: string[] | undefined;
+let cachedModelsAt = 0;
+const MODEL_CACHE_TTL = 5 * 60_000;
+
+async function getAvailableModels(): Promise<string[]> {
+	if (cachedModels && Date.now() - cachedModelsAt < MODEL_CACHE_TTL) {
+		return cachedModels;
+	}
+	try {
+		const { getClient } = await import("../copilot/client.js");
+		const client = await getClient();
+		const models = await client.listModels();
+		if (models.length > 0) {
+			cachedModels = models.map((m) => m.id);
+			cachedModelsAt = Date.now();
+			return cachedModels;
+		}
+	} catch {
+		/* fall through to fallback */
+	}
+	return cachedModels ?? [config.copilotModel];
+}
 
 function getTimeoutLabel(): string {
 	const preset = TIMEOUT_PRESETS.find((p) => p.ms === config.workerTimeoutMs);
@@ -77,8 +95,13 @@ const settingsMenu = new Menu("settings-menu")
 	.text(
 		() => `🤖 ${config.copilotModel}`,
 		async (ctx) => {
-			const idx = MODEL_PRESETS.indexOf(config.copilotModel);
-			const next = MODEL_PRESETS[(idx + 1) % MODEL_PRESETS.length];
+			const models = await getAvailableModels();
+			if (models.length === 0) {
+				await ctx.answerCallbackQuery("No models available");
+				return;
+			}
+			const idx = models.indexOf(config.copilotModel);
+			const next = models[(idx + 1) % models.length];
 			config.copilotModel = next;
 			persistModel(next);
 			ctx.menu.update();
@@ -98,9 +121,12 @@ const settingsMenu = new Menu("settings-menu")
 		},
 	)
 	.row()
-	.text(() => `📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`, async (ctx) => {
-		await ctx.answerCallbackQuery(`Uptime: ${getUptimeStr()}`);
-	})
+	.text(
+		() => `📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`,
+		async (ctx) => {
+			await ctx.answerCallbackQuery(`Uptime: ${getUptimeStr()}`);
+		},
+	)
 	.row()
 	.back("🔙 Back", async (ctx) => {
 		await ctx.editMessageText("NZB Menu:");
@@ -280,7 +306,8 @@ export function createBot(): Bot {
 				"⚡ Breakthrough Features:\n" +
 				"• @bot query — Use me inline in any chat!\n" +
 				"• React to any message to trigger AI:\n" +
-				getReactionHelpText() + "\n" +
+				getReactionHelpText() +
+				"\n" +
 				"• Smart suggestions appear after each response",
 			{ reply_markup: mainMenu },
 		),
