@@ -2,14 +2,96 @@ const TELEGRAM_MAX_LENGTH = 4096;
 // Reserve space for tag closure and pagination prefix
 const CHUNK_TARGET = TELEGRAM_MAX_LENGTH - 40;
 
+// Telegram HTML tags we track for proper tag closure across chunks
+const TRACKED_TAGS = ["pre", "code", "blockquote", "b", "i", "s", "u", "a", "tg-spoiler"] as const;
+
 /** Escape HTML special characters. */
 export function escapeHtml(text: string): string {
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Detect Telegram "message is not modified" errors — safe to ignore. */
+export function isMessageNotModifiedError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /message is not modified|MESSAGE_NOT_MODIFIED/i.test(msg);
+}
+
+/** Detect Telegram HTML parse errors — trigger plain text fallback. */
+export function isHtmlParseError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /can't parse entities|parse entities|find end of the entity/i.test(msg);
+}
+
+/** Detect Telegram "message thread not found" errors — retry without message_thread_id. */
+export function isThreadNotFoundError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /message thread not found/i.test(msg);
+}
+
+/** Detect Telegram "chat not found" errors — provide descriptive error feedback. */
+export function isChatNotFoundError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /chat not found/i.test(msg);
+}
+
+/**
+ * Track open HTML tags in a segment for proper closure/reopening across chunks.
+ * Returns the stack of currently open tag names (outermost first).
+ */
+function getOpenTagStack(html: string): string[] {
+	const stack: string[] = [];
+	const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?\/?>/gi;
+	let match: RegExpExecArray | null;
+	while ((match = tagPattern.exec(html)) !== null) {
+		const raw = match[0];
+		const tagName = match[1].toLowerCase();
+		if (!TRACKED_TAGS.includes(tagName as (typeof TRACKED_TAGS)[number])) continue;
+		const isClosing = raw.startsWith("</");
+		const isSelfClosing = raw.endsWith("/>");
+		if (isClosing) {
+			// Pop the most recent matching tag
+			for (let i = stack.length - 1; i >= 0; i--) {
+				if (stack[i] === tagName) {
+					stack.splice(i, 1);
+					break;
+				}
+			}
+		} else if (!isSelfClosing) {
+			stack.push(tagName);
+		}
+	}
+	return stack;
+}
+
+/**
+ * Find a safe split index that doesn't break HTML entities (e.g. &amp;) or
+ * split inside an HTML tag.
+ */
+function findSafeSplitIndex(text: string, targetIndex: number): number {
+	// Don't split inside an HTML entity (& ... ;)
+	const lastAmp = text.lastIndexOf("&", targetIndex);
+	if (lastAmp !== -1) {
+		const lastSemicolon = text.indexOf(";", lastAmp);
+		if (lastSemicolon !== -1 && lastSemicolon >= targetIndex && lastSemicolon - lastAmp < 10) {
+			return lastAmp;
+		}
+	}
+	// Don't split inside an HTML tag (< ... >)
+	const lastOpen = text.lastIndexOf("<", targetIndex);
+	if (lastOpen !== -1) {
+		const lastClose = text.indexOf(">", lastOpen);
+		if (lastClose !== -1 && lastClose >= targetIndex) {
+			return lastOpen;
+		}
+	}
+	return targetIndex;
+}
+
 /**
  * Split a long message into chunks that fit within Telegram's message limit.
- * HTML-aware: if a split falls inside a <pre> or <blockquote> block, close and reopen it.
+ * Full HTML-aware: tracks all open tags (pre, code, blockquote, b, i, s, u, a, tg-spoiler)
+ * and properly closes/reopens them across chunk boundaries.
+ * Avoids splitting inside HTML entities or tags.
  */
 export function chunkMessage(text: string): string[] {
 	if (text.length <= TELEGRAM_MAX_LENGTH) {
@@ -25,6 +107,7 @@ export function chunkMessage(text: string): string[] {
 			break;
 		}
 
+		// Find a good split point — prefer newline, then space, then hard cut
 		let splitAt = remaining.lastIndexOf("\n", CHUNK_TARGET);
 		if (splitAt < CHUNK_TARGET * 0.3) {
 			splitAt = remaining.lastIndexOf(" ", CHUNK_TARGET);
@@ -33,20 +116,25 @@ export function chunkMessage(text: string): string[] {
 			splitAt = CHUNK_TARGET;
 		}
 
+		// Ensure we don't split inside an HTML entity or tag
+		splitAt = findSafeSplitIndex(remaining, splitAt);
+
 		const segment = remaining.slice(0, splitAt);
 
-		// Check for unclosed block-level tags
-		const preOpens = (segment.match(/<pre/g) || []).length;
-		const preCloses = (segment.match(/<\/pre>/g) || []).length;
-		const bqOpens = (segment.match(/<blockquote/g) || []).length;
-		const bqCloses = (segment.match(/<\/blockquote>/g) || []).length;
+		// Track all open tags in the segment
+		const openTags = getOpenTagStack(segment);
 
-		if (preOpens > preCloses) {
-			chunks.push(segment + "\n</pre>");
-			remaining = "<pre>" + remaining.slice(splitAt).trimStart();
-		} else if (bqOpens > bqCloses) {
-			chunks.push(segment + "</blockquote>");
-			remaining = "<blockquote>" + remaining.slice(splitAt).trimStart();
+		if (openTags.length > 0) {
+			// Close open tags in reverse order
+			const closeTags = openTags
+				.slice()
+				.reverse()
+				.map((t) => `</${t}>`)
+				.join("");
+			// Reopen tags in original order for the next chunk
+			const reopenTags = openTags.map((t) => `<${t}>`).join("");
+			chunks.push(segment + closeTags);
+			remaining = reopenTags + remaining.slice(splitAt).trimStart();
 		} else {
 			chunks.push(segment);
 			remaining = remaining.slice(splitAt).trimStart();
@@ -190,15 +278,28 @@ export const escapeSegment = escapeHtml;
  */
 export function formatToolSummaryExpandable(
 	toolCalls: { name: string; durationMs?: number; detail?: string }[],
+	stats?: { elapsedMs?: number; model?: string; inputTokens?: number; outputTokens?: number },
 ): string {
 	if (toolCalls.length === 0) return "";
+
+	const totalMs = toolCalls.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
+	const header = `🔧 ${toolCalls.length} tools · ${(totalMs / 1000).toFixed(1)}s`;
 
 	const lines = toolCalls.map((t) => {
 		const name = escapeHtml(t.name);
 		const dur = t.durationMs !== undefined ? ` (${(t.durationMs / 1000).toFixed(1)}s)` : "";
-		const detail = t.detail ? `\n  <i>${escapeHtml(t.detail.slice(0, 60))}</i>` : "";
+		const detail = t.detail ? ` — <i>${escapeHtml(t.detail.slice(0, 60))}</i>` : "";
 		return `• ${name}${dur}${detail}`;
 	});
 
-	return `\n\n<blockquote expandable>🔧 Tools used:\n${lines.join("\n")}</blockquote>`;
+	const statParts: string[] = [];
+	if (stats?.elapsedMs) statParts.push(`⏱ ${(stats.elapsedMs / 1000).toFixed(1)}s total`);
+	if (stats?.model) statParts.push(`🤖 ${escapeHtml(stats.model)}`);
+	if (stats?.inputTokens && stats?.outputTokens) {
+		const fmtT = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+		statParts.push(`⬆${fmtT(stats.inputTokens)} ⬇${fmtT(stats.outputTokens)}`);
+	}
+	const statsLine = statParts.length > 0 ? `\n\n${statParts.join(" · ")}` : "";
+
+	return `\n\n<blockquote expandable>${header}\n${lines.join("\n")}${statsLine}</blockquote>`;
 }
