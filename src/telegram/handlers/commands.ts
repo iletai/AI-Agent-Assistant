@@ -1,13 +1,13 @@
 import type { Menu } from "@grammyjs/menu";
 import type { Bot, Keyboard } from "grammy";
-import { config, persistModel } from "../../config.js";
-import { cancelCurrentMessage, getQueueSize, getWorkers } from "../../copilot/orchestrator.js";
-import type { WorkerInfo } from "../../copilot/tools.js";
+import { config, persistEnvVar, persistModel } from "../../config.js";
+import { cancelCurrentMessage, compactSession, getQueueSize, getWorkers, resetSession } from "../../copilot/orchestrator.js";
 import { listSkills } from "../../copilot/skills.js";
+import type { WorkerInfo } from "../../copilot/tools.js";
 import { restartDaemon } from "../../daemon.js";
 import { searchMemories } from "../../store/db.js";
-import { getReactionHelpText } from "./reactions.js";
 import { buildSettingsText, formatMemoryList } from "../menus.js";
+import { getReactionHelpText } from "./reactions.js";
 
 export function registerCommandHandlers(
 	bot: Bot,
@@ -29,29 +29,85 @@ export function registerCommandHandlers(
 		ctx.reply(
 			"I'm NZB, your AI daemon.\n\n" +
 				"Just send me a message and I'll handle it.\n\n" +
-				"Commands:\n" +
-				"/cancel — Cancel the current message\n" +
-				"/model — Show current model\n" +
-				"/model <name> — Switch model\n" +
-				"/memory — Show stored memories\n" +
-				"/skills — List installed skills\n" +
-				"/workers — List active worker sessions\n" +
-				"/status — Show system status\n" +
-				"/settings — Bot settings\n" +
-				"/restart — Restart NZB\n" +
-				"/help — Show this help\n\n" +
+				"Session:\n" +
+				"/new — Reset session (fresh context)\n" +
+				"/compact — Compact session context\n" +
+				"/cancel — Cancel the current message\n\n" +
+				"Config:\n" +
+				"/model — Show/switch AI model\n" +
+				"/think <level> — off|low|medium|high\n" +
+				"/verbose — Toggle verbose responses\n" +
+				"/usage — off|tokens|full\n" +
+				"/settings — Bot settings\n\n" +
+				"Info:\n" +
+				"/status — System status\n" +
+				"/memory — Stored memories\n" +
+				"/skills — Installed skills\n" +
+				"/workers — Active worker sessions\n" +
+				"/restart — Restart NZB\n\n" +
 				"⚡ Breakthrough Features:\n" +
 				"• @bot query — Use me inline in any chat!\n" +
 				"• React to any message to trigger AI:\n" +
 				getReactionHelpText() +
 				"\n" +
-				"• Smart suggestions appear after each response",
+				"• Smart suggestions appear after each response\n" +
+				"• Works in groups — mention me to activate!",
 			{ reply_markup: mainMenu },
 		),
 	);
 	bot.command("cancel", async (ctx) => {
 		const cancelled = await cancelCurrentMessage();
 		await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
+	});
+	bot.command("new", async (ctx) => {
+		await ctx.reply("🔄 Resetting session…");
+		try {
+			await resetSession();
+			await ctx.reply("✅ Session reset. Fresh context — send me a message to start.");
+		} catch (err) {
+			await ctx.reply(`❌ Reset failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	});
+	bot.command("compact", async (ctx) => {
+		await ctx.reply("📦 Compacting session context…");
+		try {
+			const summary = await compactSession();
+			const preview = summary.length > 500 ? summary.slice(0, 500) + "…" : summary;
+			await ctx.reply(`✅ Context compacted.\n\n${preview}`);
+		} catch (err) {
+			await ctx.reply(`❌ Compaction failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	});
+	bot.command("think", async (ctx) => {
+		const THINK_LEVELS = ["off", "low", "medium", "high"] as const;
+		const arg = ctx.match?.trim().toLowerCase();
+		if (arg && THINK_LEVELS.includes(arg as any)) {
+			config.thinkingLevel = arg as typeof config.thinkingLevel;
+			persistEnvVar("THINKING_LEVEL", arg);
+			await ctx.reply(`🧠 Thinking level → ${arg}`);
+		} else if (arg) {
+			await ctx.reply(`Invalid level: ${arg}\nValid: ${THINK_LEVELS.join(", ")}`);
+		} else {
+			await ctx.reply(`🧠 Thinking level: ${config.thinkingLevel}\nSet with: /think off|low|medium|high`);
+		}
+	});
+	bot.command("usage", async (ctx) => {
+		const USAGE_MODES = ["off", "tokens", "full"] as const;
+		const arg = ctx.match?.trim().toLowerCase();
+		if (arg && USAGE_MODES.includes(arg as any)) {
+			config.usageMode = arg as typeof config.usageMode;
+			persistEnvVar("USAGE_MODE", arg);
+			await ctx.reply(`📊 Usage display → ${arg}`);
+		} else if (arg) {
+			await ctx.reply(`Invalid mode: ${arg}\nValid: ${USAGE_MODES.join(", ")}`);
+		} else {
+			await ctx.reply(`📊 Usage display: ${config.usageMode}\nSet with: /usage off|tokens|full`);
+		}
+	});
+	bot.command("verbose", async (ctx) => {
+		config.verboseMode = !config.verboseMode;
+		persistEnvVar("VERBOSE_MODE", config.verboseMode ? "true" : "false");
+		await ctx.reply(`📝 Verbose mode ${config.verboseMode ? "ON — detailed responses" : "OFF — concise responses"}`);
 	});
 	bot.command("model", async (ctx) => {
 		const arg = ctx.match?.trim();
@@ -112,6 +168,9 @@ export function registerCommandHandlers(
 		const lines = [
 			"📊 NZB Status",
 			`Model: ${config.copilotModel}`,
+			`Thinking: ${config.thinkingLevel}`,
+			`Verbose: ${config.verboseMode ? "on" : "off"}`,
+			`Usage: ${config.usageMode}`,
 			`Uptime: ${getUptimeStr()}`,
 			`Workers: ${workers.length} active`,
 			`Queue: ${getQueueSize()} pending`,
@@ -137,6 +196,9 @@ export function registerCommandHandlers(
 		const lines = [
 			"📊 NZB Status",
 			`Model: ${config.copilotModel}`,
+			`Thinking: ${config.thinkingLevel}`,
+			`Verbose: ${config.verboseMode ? "on" : "off"}`,
+			`Usage: ${config.usageMode}`,
 			`Uptime: ${getUptimeStr()}`,
 			`Workers: ${workers.length} active`,
 			`Queue: ${getQueueSize()} pending`,

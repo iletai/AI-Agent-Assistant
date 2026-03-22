@@ -529,6 +529,18 @@ export async function sendToOrchestrator(
 		if (freshMemory) {
 			taggedPrompt = `<reminder>\n${freshMemory}\n</reminder>\n\n${taggedPrompt}`;
 		}
+
+		// Inject thinking level and verbose mode hints
+		const hints: string[] = [];
+		if (config.thinkingLevel !== "off") {
+			hints.push(`[Thinking level: ${config.thinkingLevel} — reason through this at ${config.thinkingLevel} depth]`);
+		}
+		if (config.verboseMode) {
+			hints.push("[Verbose mode: ON — provide detailed, thorough explanations with examples]");
+		}
+		if (hints.length > 0) {
+			taggedPrompt = `${hints.join("\n")}\n\n${taggedPrompt}`;
+		}
 	}
 
 	// Log role: background events are "system", user messages are "user"
@@ -668,4 +680,51 @@ export function getWorkers(): Map<string, WorkerInfo> {
 
 export function getQueueSize(): number {
 	return messageQueue.length;
+}
+
+/** Reset the orchestrator session — destroys current session and creates a fresh one. */
+export async function resetSession(): Promise<void> {
+	// Drain any queued messages first
+	while (messageQueue.length > 0) {
+		const item = messageQueue.shift()!;
+		item.reject(new Error("Session reset"));
+	}
+
+	// Abort in-flight request
+	if (orchestratorSession && currentCallback) {
+		try {
+			await orchestratorSession.abort();
+		} catch {}
+	}
+
+	// Destroy the existing session
+	if (orchestratorSession) {
+		try {
+			await orchestratorSession.destroy();
+		} catch {}
+		orchestratorSession = undefined;
+	}
+
+	// Clear persisted session ID so a fresh session is created
+	deleteState(ORCHESTRATOR_SESSION_KEY);
+	console.log("[nzb] Session reset — will create fresh session on next message");
+}
+
+/** Compact the session by sending a compaction prompt (summarize context). */
+export async function compactSession(): Promise<string> {
+	const session = await ensureOrchestratorSession();
+	try {
+		const result = await session.sendAndWait(
+			{
+				prompt:
+					"[System: Context compaction requested] Summarize everything important from our conversation so far into a concise internal note. " +
+					"Include: key decisions, pending tasks, user preferences, and any context you'd need to continue helping. " +
+					"This summary will be used to maintain continuity. Be thorough but concise.",
+			},
+			30_000,
+		);
+		return result?.data?.content || "(Compaction completed)";
+	} catch (err) {
+		return `Compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+	}
 }

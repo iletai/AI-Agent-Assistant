@@ -20,8 +20,18 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 		const chatId = ctx.chat.id;
 		const userMessageId = ctx.message.message_id;
 		const replyParams = { message_id: userMessageId };
+
+		// Group chat support — only respond when mentioned or replied to
+		const isGroup = ctx.chat.type === "group" || ctx.chat.type === "supergroup";
+		if (isGroup && config.groupMentionOnly) {
+			const botUsername = ctx.me.username;
+			const isMentioned = botUsername && ctx.message.text.includes(`@${botUsername}`);
+			const isReplyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
+			if (!isMentioned && !isReplyToBot) return;
+		}
+
 		const msgPreview = ctx.message.text.length > 80 ? ctx.message.text.slice(0, 80) + "…" : ctx.message.text;
-		void logInfo(`📩 Message: ${msgPreview}`);
+		void logInfo(`📩 Message${isGroup ? " (group)" : ""}: ${msgPreview}`);
 
 		// React with 👀 to acknowledge message received
 		try {
@@ -166,6 +176,12 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 
 		// If user replies to a message, include surrounding conversation context
 		let userPrompt = ctx.message.text;
+
+		// Strip bot mention from the prompt in group chats
+		if (isGroup && ctx.me.username) {
+			userPrompt = userPrompt.replace(new RegExp(`@${ctx.me.username}\\b`, "gi"), "").trim();
+		}
+
 		const replyMsg = ctx.message.reply_to_message;
 		if (replyMsg && "text" in replyMsg && replyMsg.text) {
 			// Try to find full conversation context around the replied message
@@ -214,14 +230,14 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 						}
 
 						let textWithMeta = text;
-						if (usageInfo) {
+						if (usageInfo && config.usageMode !== "off") {
 							const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 							const parts: string[] = [];
-							if (usageInfo.model) parts.push(usageInfo.model);
+							if (config.usageMode === "full" && usageInfo.model) parts.push(usageInfo.model);
 							parts.push(`⬆${fmtTokens(usageInfo.inputTokens)} ⬇${fmtTokens(usageInfo.outputTokens)}`);
 							const totalTokens = usageInfo.inputTokens + usageInfo.outputTokens;
 							parts.push(`Σ${fmtTokens(totalTokens)}`);
-							if (usageInfo.duration) parts.push(`${(usageInfo.duration / 1000).toFixed(1)}s`);
+							if (config.usageMode === "full" && usageInfo.duration) parts.push(`${(usageInfo.duration / 1000).toFixed(1)}s`);
 							textWithMeta += `\n\n📊 ${parts.join(" · ")}`;
 						}
 						const formatted = toTelegramHTML(textWithMeta);

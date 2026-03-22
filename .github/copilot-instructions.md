@@ -51,7 +51,7 @@ CLI (src/cli.ts)
 ### Module System (ESM)
 
 - All imports use `.js` extensions: `import { foo } from "./bar.js"` (TypeScript compiles `.ts` → `.js`, so imports must reference the output extension).
-- Use dynamic `await import()` for code splitting and avoiding circular dependencies (see `cli.ts` command loading and `restart_max` tool).
+- Use dynamic `await import()` for code splitting and avoiding circular dependencies (see `cli.ts` command loading and `restart_nzb` tool).
 - The `postinstall` script runs `fix-esm-imports.cjs` to patch `vscode-jsonrpc` for ESM compatibility.
 
 ### Naming Conventions
@@ -74,7 +74,7 @@ CLI (src/cli.ts)
 - **Trailing commas**: Used in multi-line constructs.
 - **No default exports**: All modules use named exports.
 - **Console prefix**: All console.log/error calls use `[nzb]` prefix: `console.log("[nzb] Starting daemon...")`.
-- **Legacy naming**: Some identifiers still use the old project name "max" — the DB table is `max_state`, the restart tool is `restart_max`, the TUI label renders `"MAX"`, and the restart env var is `MAX_RESTARTED`. These are intentional legacy artifacts — do NOT rename them without a coordinated migration.
+- **Legacy naming**: The old project name "max" has been fully migrated to "nzb". The DB table is `nzb_state`, the restart tool is `restart_nzb`, the TUI label renders `"NZB"`, and the restart env var is `NZB_RESTARTED`.
 
 ### Type Patterns
 
@@ -128,13 +128,13 @@ defineTool("tool_name", {
 - **Prepared statements**: Use `db.prepare(sql).run/get/all()` — never concatenate user input into SQL strings.
 - **Migration**: Schema changes use `ALTER TABLE ... ADD COLUMN` wrapped in try/catch (column-already-exists errors are intentionally ignored).
 - **Pruning**: Conversation log is pruned to 200 entries on each insert to prevent unbounded growth.
-- **Key-value state**: Use `max_state` table with `getState(key)` / `setState(key, value)` / `deleteState(key)` for arbitrary persistent state (e.g., orchestrator session ID).
+- **Key-value state**: Use `nzb_state` table with `getState(key)` / `setState(key, value)` / `deleteState(key)` for arbitrary persistent state (e.g., orchestrator session ID).
 
 ## Error Handling
 
 - **Try/catch with graceful fallback**: Operations that may fail (file I/O, network, session management) use try/catch and continue with best-effort behavior.
 - **Never crash the daemon**: The orchestrator and all tools return error strings rather than throwing. The daemon must stay running.
-- **Timeout handling**: Workers have configurable timeout (`WORKER_TIMEOUT` env var, default 300s). Timeout errors are detected via regex `isTimeoutError()` and produce user-friendly messages with suggested fixes.
+- **Timeout handling**: Workers have configurable timeout (`WORKER_TIMEOUT` env var, default 3,600,000ms / 60 minutes). Timeout errors are detected via regex `isTimeoutError()` and produce user-friendly messages with suggested fixes.
 - **Reset coalescing**: Multiple concurrent calls to `resetClient()` coalesce to a single reset via `pendingResetPromise`.
 - **Session health checks**: The orchestrator runs health checks every 30 seconds and auto-reconnects on failure.
 
@@ -142,7 +142,7 @@ defineTool("tool_name", {
 
 - **Three-phase shutdown**: `shutdown()` uses a state machine (`idle` → `warned` → `shutting_down`). First Ctrl+C warns about active workers; second Ctrl+C proceeds; third forces `process.exit(1)`. A 3-second force-exit timer runs as a safety net.
 - **Shutdown order**: Stop Telegram bot → destroy all worker sessions → stop Copilot client → close database → exit.
-- **`restartDaemon()`**: Spawns a detached replacement process with `spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)])`, sets `MAX_RESTARTED=1` env var, then exits. The `restart_max` tool and `/restart` Telegram command both call this.
+- **`restartDaemon()`**: Spawns a detached replacement process with `spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)])`, sets `NZB_RESTARTED=1` env var, then exits. The `restart_nzb` tool and `/restart` Telegram command both call this.
 - **Worker cleanup**: Both shutdown and restart destroy all active worker sessions via `Promise.allSettled()` before proceeding.
 
 ## Retry and Backoff
@@ -163,7 +163,7 @@ defineTool("tool_name", {
 
 - **Blocked directories**: Workers cannot operate in sensitive directories (`.ssh`, `.gnupg`, `.aws`, `.azure`, `.config/gcloud`, `.kube`, `.docker`, `.npmrc`, `.pypirc`). Enforced via path checking against `BLOCKED_WORKER_DIRS`.
 - **Path traversal guard**: Skill creation validates slugs with regex `^[a-z0-9]+(-[a-z0-9]+)*$` and checks resolved paths don't escape the skills directory.
-- **Bearer token auth**: API server generates a random token on first run, stored at `~/.nzb/.api-token` with mode `0o600`. All API endpoints (except `/status`) require `Authorization: Bearer <token>`.
+- **Bearer token auth**: API server generates a random token on first run, stored at `~/.nzb/api-token` with mode `0o600`. All API endpoints (except `/status`) require `Authorization: Bearer <token>`.
 - **Telegram auth**: Bot middleware silently ignores messages from unauthorized user IDs (configured via `AUTHORIZED_USER_ID`).
 - **Local-only binding**: API server binds to `127.0.0.1` only — not exposed to the network.
 - **Self-edit protection**: By default, NZB refuses to modify its own source code. The `--self-edit` flag explicitly unlocks this.
@@ -184,7 +184,7 @@ defineTool("tool_name", {
 
 ## TUI Patterns
 
-- **readline interface** with persistent history (~/.nzb/.tui_history, 1000 lines).
+- **readline interface** with persistent history (~/.nzb/tui_history, 1000 lines).
 - **Markdown-to-ANSI rendering**: Custom renderer converts markdown headings, code blocks, lists, bold/italic to ANSI escape sequences.
 - **Streaming renderer**: SSE events arrive chunk-by-chunk. Lines are buffered and visually re-rendered (cleared + redrawn) for smooth output.
 - **Thinking indicator**: Animated dots ("Thinking.", "Thinking..", "Thinking...") on 400ms interval while waiting for response.
@@ -222,7 +222,11 @@ All config lives in `~/.nzb/.env`, validated by a zod schema:
 | `AUTHORIZED_USER_ID` | required | Telegram user ID for auth |
 | `API_PORT` | `7777` | Local API server port |
 | `COPILOT_MODEL` | `claude-sonnet-4.6` | Default Copilot model |
-| `WORKER_TIMEOUT` | `300` | Worker timeout in seconds |
+| `WORKER_TIMEOUT` | `3600000` | Worker timeout in milliseconds (default: 60 minutes) |
+| `SHOW_REASONING` | `false` | Show model reasoning/thinking in responses |
+| `LOG_CHANNEL_ID` | — | Telegram channel ID for logging messages |
+| `NODE_EXTRA_CA_CERTS` | — | Path to CA certificate bundle (for corporate proxies) |
+| `OPENAI_API_KEY` | — | OpenAI API key (optional, for additional capabilities) |
 
 ## Path Constants
 
@@ -233,8 +237,10 @@ All paths are centralized in `src/paths.ts` under `~/.nzb/`:
 - `ENV_PATH` — `~/.nzb/.env`
 - `SKILLS_DIR` — `~/.nzb/skills/`
 - `SESSIONS_DIR` — `~/.nzb/sessions/`
-- `HISTORY_PATH` — `~/.nzb/.tui_history`
-- `API_TOKEN_PATH` — `~/.nzb/.api-token`
+- `HISTORY_PATH` — `~/.nzb/tui_history`
+- `TUI_DEBUG_LOG_PATH` — `~/.nzb/tui-debug.log`
+- `API_TOKEN_PATH` — `~/.nzb/api-token`
+- `PID_FILE_PATH` — `~/.nzb/nzb.pid`
 
 ## Import Organization
 
@@ -247,11 +253,11 @@ Follow this order in imports:
 
 ## Testing and Development
 
-- `npm run dev` — runs `tsx --watch src/daemon.ts` for hot-reload development.
+- `npm run dev` — runs `tsx --watch src/cli.ts start` for hot-reload development.
 - `npm run tui` — launches the terminal UI client (connects to running daemon via SSE).
 - `npm run build` — TypeScript compilation (`tsc`), outputs to `dist/`.
 - `npm run format` — Prettier formatting.
-- No test framework currently configured. When adding tests, use `vitest` (aligns with the TypeScript/ESM stack).
+- Test framework: `vitest` with `@vitest/coverage-v8`. Run `npm test` (vitest run) or `npm run test:watch` (vitest watch mode).
 
 ## Common Patterns to Follow
 
@@ -266,7 +272,9 @@ Follow this order in imports:
    interface ToolDeps {
        client: CopilotClient;
        workers: Map<string, WorkerInfo>;
+       teams: Map<string, TeamInfo>;
        onWorkerComplete: (name: string, result: string) => void;
+       onWorkerEvent?: (event: WorkerEvent) => void;
    }
    ```
 

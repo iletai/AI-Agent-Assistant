@@ -153,8 +153,13 @@ export async function startBot(): Promise<void> {
 		await bot.api.setMyCommands([
 			{ command: "start", description: "Start the bot" },
 			{ command: "help", description: "Show help text" },
+			{ command: "new", description: "Reset session (fresh context)" },
+			{ command: "compact", description: "Compact session context" },
 			{ command: "cancel", description: "Cancel current message" },
 			{ command: "model", description: "Show/switch AI model" },
+			{ command: "think", description: "Set thinking level (off/low/medium/high)" },
+			{ command: "verbose", description: "Toggle verbose responses" },
+			{ command: "usage", description: "Set usage display (off/tokens/full)" },
 			{ command: "status", description: "Show system status" },
 			{ command: "workers", description: "List active workers" },
 			{ command: "skills", description: "List installed skills" },

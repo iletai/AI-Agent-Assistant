@@ -75,6 +75,14 @@ export const config = {
 	set showReasoning(value: boolean) {
 		process.env.SHOW_REASONING = value ? "true" : "false";
 	},
+	/** Usage display mode: off | tokens | full */
+	usageMode: (process.env.USAGE_MODE || "off") as "off" | "tokens" | "full",
+	/** Verbose mode: when on, instructs the AI to be more detailed */
+	verboseMode: process.env.VERBOSE_MODE === "true",
+	/** Thinking level: off | low | medium | high */
+	thinkingLevel: (process.env.THINKING_LEVEL || "off") as "off" | "low" | "medium" | "high",
+	/** Group chat: when true, bot only responds when mentioned in groups */
+	groupMentionOnly: process.env.GROUP_MENTION_ONLY !== "false",
 };
 
 /** Persist an env variable to ~/.nzb/.env */

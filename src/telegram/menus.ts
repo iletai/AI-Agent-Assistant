@@ -48,6 +48,9 @@ export function buildSettingsText(getUptimeStr: () => string): string {
 		"⚙️ Settings\n\n" +
 		`⏱ Worker Timeout: ${getTimeoutLabel()}\n` +
 		`🤖 Model: ${config.copilotModel}\n` +
+		`🧠 Thinking: ${config.thinkingLevel}\n` +
+		`📝 Verbose: ${config.verboseMode ? "✅ ON" : "❌ OFF"}\n` +
+		`📊 Usage: ${config.usageMode}\n` +
 		`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n\n` +
 		`📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`
 	);
@@ -124,6 +127,44 @@ export function createMenus(getUptimeStr: () => string) {
 		)
 		.row()
 		.text(
+			() => `🧠 Think: ${config.thinkingLevel}`,
+			async (ctx) => {
+				const levels = ["off", "low", "medium", "high"] as const;
+				const idx = levels.indexOf(config.thinkingLevel);
+				const next = levels[(idx + 1) % levels.length];
+				config.thinkingLevel = next;
+				persistEnvVar("THINKING_LEVEL", next);
+				ctx.menu.update();
+				await ctx.editMessageText(buildSettingsText(getUptimeStr));
+				await ctx.answerCallbackQuery(`Thinking → ${next}`);
+			},
+		)
+		.text(
+			() => `📝 ${config.verboseMode ? "Verbose" : "Concise"}`,
+			async (ctx) => {
+				config.verboseMode = !config.verboseMode;
+				persistEnvVar("VERBOSE_MODE", config.verboseMode ? "true" : "false");
+				ctx.menu.update();
+				await ctx.editMessageText(buildSettingsText(getUptimeStr));
+				await ctx.answerCallbackQuery(`Verbose ${config.verboseMode ? "ON" : "OFF"}`);
+			},
+		)
+		.row()
+		.text(
+			() => `📊 Usage: ${config.usageMode}`,
+			async (ctx) => {
+				const modes = ["off", "tokens", "full"] as const;
+				const idx = modes.indexOf(config.usageMode);
+				const next = modes[(idx + 1) % modes.length];
+				config.usageMode = next;
+				persistEnvVar("USAGE_MODE", next);
+				ctx.menu.update();
+				await ctx.editMessageText(buildSettingsText(getUptimeStr));
+				await ctx.answerCallbackQuery(`Usage → ${next}`);
+			},
+		)
+		.row()
+		.text(
 			() => `📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`,
 			async (ctx) => {
 				await ctx.answerCallbackQuery(`Uptime: ${getUptimeStr()}`);
@@ -141,6 +182,9 @@ export function createMenus(getUptimeStr: () => string) {
 			const lines = [
 				"📊 NZB Status",
 				`Model: ${config.copilotModel}`,
+				`Thinking: ${config.thinkingLevel}`,
+				`Verbose: ${config.verboseMode ? "on" : "off"}`,
+				`Usage: ${config.usageMode}`,
 				`Uptime: ${getUptimeStr()}`,
 				`Workers: ${workers.length} active`,
 				`Queue: ${getQueueSize()} pending`,
