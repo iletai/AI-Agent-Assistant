@@ -357,7 +357,7 @@ describe("formatToolSummaryExpandable", () => {
 		expect(result).toContain("grep");
 		expect(result).toContain("1.5s");
 		expect(result).toContain("<blockquote expandable>");
-		expect(result).toContain("🔧 Tools used:");
+		expect(result).toContain("🔧 1 tools");
 	});
 
 	it("formats tool without duration", () => {
