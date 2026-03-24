@@ -1,4 +1,4 @@
-import { approveAll, type CopilotClient, type CopilotSession } from "@github/copilot-sdk";
+import { approveAll, type CopilotClient, type CopilotSession, type MessageOptions } from "@github/copilot-sdk";
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
@@ -82,7 +82,12 @@ let sessionCreatePromise: Promise<CopilotSession> | undefined;
 // Tracks in-flight context recovery injection so we don't race with real messages
 let recoveryInjectionPromise: Promise<void> | undefined;
 
-export type Attachment = { type: string; data: string; mimeType: string };
+export type Attachment = {
+	type: "blob";
+	data: string;
+	mimeType: string;
+	displayName?: string;
+};
 
 // Message queue — serializes access to the single persistent session
 type QueuedMessage = {
@@ -463,11 +468,11 @@ async function executeOnSession(
 	});
 
 	try {
-		const sendPayload: { prompt: string; attachments?: Attachment[] } = { prompt };
+		const sendPayload: MessageOptions = { prompt };
 		if (attachments?.length) {
 			sendPayload.attachments = attachments;
 		}
-		const result = await session.sendAndWait(sendPayload as any, 60_000);
+		const result = await session.sendAndWait(sendPayload, 60_000);
 		// Allow late-arriving events (e.g. assistant.usage) to be processed
 		await new Promise((r) => setTimeout(r, 150));
 		const finalContent = result?.data?.content || accumulated || "(No response)";
