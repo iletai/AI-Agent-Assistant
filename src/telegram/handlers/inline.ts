@@ -100,7 +100,7 @@ export function registerInlineQueryHandler(bot: Bot): void {
 					try {
 						const chatId = ctx.chat?.id;
 						if (chatId) {
-							const truncated = text.length > 4000 ? text.slice(0, 4000) + "\n\n⋯" : text;
+							const truncated = text.length > 3900 ? text.slice(0, 3900) + "\n\n⋯" : text;
 							await bot.api.sendMessage(chatId, `🔍 <b>Detailed Answer:</b>\n\n${escapeHtml(truncated)}`, {
 								parse_mode: "HTML",
 							});

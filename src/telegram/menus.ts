@@ -3,7 +3,7 @@ import { config, persistEnvVar, persistModel } from "../config.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers } from "../copilot/orchestrator.js";
 import { listSkills } from "../copilot/skills.js";
 import { searchMemories } from "../store/db.js";
-import { escapeHtml } from "./formatter.js";
+import { chunkMessage, escapeHtml, truncateForTelegram } from "./formatter.js";
 
 // Worker timeout presets (ms → display label)
 export const TIMEOUT_PRESETS = [
@@ -204,7 +204,7 @@ export function createMenus(getUptimeStr: () => string) {
 				await ctx.reply("No active worker sessions.");
 			} else {
 				const lines = workers.map((w) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
-				await ctx.reply(lines.join("\n"));
+				await ctx.reply(truncateForTelegram(lines.join("\n")));
 			}
 		})
 		.text("🧠 Skills", async (ctx) => {
@@ -214,7 +214,7 @@ export function createMenus(getUptimeStr: () => string) {
 				await ctx.reply("No skills installed.");
 			} else {
 				const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
-				await ctx.reply(lines.join("\n"));
+				await ctx.reply(truncateForTelegram(lines.join("\n")));
 			}
 		})
 		.row()
@@ -224,7 +224,11 @@ export function createMenus(getUptimeStr: () => string) {
 			if (memories.length === 0) {
 				await ctx.reply("No memories stored.");
 			} else {
-				await ctx.reply(formatMemoryList(memories), { parse_mode: "HTML" });
+				const formatted = formatMemoryList(memories);
+				const chunks = chunkMessage(formatted);
+				for (const chunk of chunks) {
+					await ctx.reply(chunk, { parse_mode: "HTML" });
+				}
 			}
 		})
 		.submenu("⚙️ Settings", "settings-menu", async (ctx) => {

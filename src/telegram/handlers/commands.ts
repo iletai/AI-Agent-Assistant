@@ -1,11 +1,18 @@
 import type { Menu } from "@grammyjs/menu";
 import type { Bot, Keyboard } from "grammy";
 import { config, persistEnvVar, persistModel } from "../../config.js";
-import { cancelCurrentMessage, compactSession, getQueueSize, getWorkers, resetSession } from "../../copilot/orchestrator.js";
+import {
+	cancelCurrentMessage,
+	compactSession,
+	getQueueSize,
+	getWorkers,
+	resetSession,
+} from "../../copilot/orchestrator.js";
 import { listSkills } from "../../copilot/skills.js";
 import type { WorkerInfo } from "../../copilot/tools.js";
 import { restartDaemon } from "../../daemon.js";
 import { searchMemories } from "../../store/db.js";
+import { chunkMessage } from "../formatter.js";
 import { buildSettingsText, formatMemoryList } from "../menus.js";
 import { getReactionHelpText } from "./reactions.js";
 
@@ -142,7 +149,11 @@ export function registerCommandHandlers(
 		if (memories.length === 0) {
 			await ctx.reply("No memories stored.");
 		} else {
-			await ctx.reply(formatMemoryList(memories), { parse_mode: "HTML" });
+			const formatted = formatMemoryList(memories);
+			const chunks = chunkMessage(formatted);
+			for (const chunk of chunks) {
+				await ctx.reply(chunk, { parse_mode: "HTML" });
+			}
 		}
 	});
 	bot.command("skills", async (ctx) => {
@@ -151,7 +162,11 @@ export function registerCommandHandlers(
 			await ctx.reply("No skills installed.");
 		} else {
 			const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
-			await ctx.reply(lines.join("\n"));
+			const text = lines.join("\n");
+			const chunks = chunkMessage(text);
+			for (const chunk of chunks) {
+				await ctx.reply(chunk);
+			}
 		}
 	});
 	bot.command("workers", async (ctx) => {
@@ -160,7 +175,11 @@ export function registerCommandHandlers(
 			await ctx.reply("No active worker sessions.");
 		} else {
 			const lines = workers.map((w: WorkerInfo) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
-			await ctx.reply(lines.join("\n"));
+			const text = lines.join("\n");
+			const chunks = chunkMessage(text);
+			for (const chunk of chunks) {
+				await ctx.reply(chunk);
+			}
 		}
 	});
 	bot.command("status", async (ctx) => {
@@ -214,7 +233,11 @@ export function registerCommandHandlers(
 		if (memories.length === 0) {
 			await ctx.reply("No memories stored.");
 		} else {
-			await ctx.reply(formatMemoryList(memories), { parse_mode: "HTML" });
+			const formatted = formatMemoryList(memories);
+			const chunks = chunkMessage(formatted);
+			for (const chunk of chunks) {
+				await ctx.reply(chunk, { parse_mode: "HTML" });
+			}
 		}
 	});
 	bot.hears("🔄 Restart", async (ctx) => {

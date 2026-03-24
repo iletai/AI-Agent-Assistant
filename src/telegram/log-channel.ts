@@ -17,14 +17,18 @@ const ICONS: Record<LogLevel, string> = {
 	debug: "🔍",
 };
 
+const MAX_LOG_LENGTH = 4096;
+
 /** Send a log message to the configured Telegram channel */
 export async function sendLog(level: LogLevel, message: string): Promise<void> {
 	if (!botRef || !config.logChannelId) return;
 	const icon = ICONS[level];
 	const timestamp = new Date().toISOString().replace("T", " ").slice(0, 19);
-	const text = `${icon} <b>[${level.toUpperCase()}]</b> <code>${timestamp}</code>\n${escapeHtml(message)}`;
+	const header = `${icon} <b>[${level.toUpperCase()}]</b> <code>${timestamp}</code>\n`;
+	const maxBody = MAX_LOG_LENGTH - header.length - 4;
+	const body = message.length > maxBody ? escapeHtml(message.slice(0, maxBody)) + " ⋯" : escapeHtml(message);
 	try {
-		await botRef.api.sendMessage(config.logChannelId, text, { parse_mode: "HTML" });
+		await botRef.api.sendMessage(config.logChannelId, header + body, { parse_mode: "HTML" });
 	} catch {
 		// best-effort — don't crash if log channel is unreachable
 	}

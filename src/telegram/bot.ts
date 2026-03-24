@@ -235,7 +235,8 @@ export async function sendProactiveMessage(text: string): Promise<void> {
 export async function sendWorkerNotification(message: string): Promise<void> {
 	if (!bot || config.authorizedUserId === undefined) return;
 	try {
-		await bot.api.sendMessage(config.authorizedUserId, message);
+		const { truncateForTelegram } = await import("./formatter.js");
+		await bot.api.sendMessage(config.authorizedUserId, truncateForTelegram(message));
 	} catch {
 		// best-effort — don't crash if notification fails
 	}

@@ -93,6 +93,12 @@ function findSafeSplitIndex(text: string, targetIndex: number): number {
 	return targetIndex;
 }
 
+/** Truncate text to fit within Telegram's message length limit. */
+export function truncateForTelegram(text: string, limit = TELEGRAM_MAX_LENGTH): string {
+	if (text.length <= limit) return text;
+	return text.slice(0, limit - 4) + " ⋯";
+}
+
 /**
  * Split a long message into chunks that fit within Telegram's message limit.
  * Full HTML-aware: tracks all open tags (pre, code, blockquote, b, i, s, u, a, tg-spoiler)
