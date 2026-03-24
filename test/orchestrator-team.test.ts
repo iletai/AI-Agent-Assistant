@@ -60,7 +60,7 @@ describe("feedBackgroundResult team aggregation", () => {
 	});
 
 	it("imports TeamInfo type correctly", async () => {
-		const { TeamInfo } = await import("../src/copilot/tools.js") as any;
+		const { TeamInfo } = (await import("../src/copilot/tools.js")) as any;
 		// TeamInfo is a type, not a runtime value, but the module should load
 		expect(true).toBe(true);
 	});

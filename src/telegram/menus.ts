@@ -49,6 +49,7 @@ export function buildSettingsText(getUptimeStr: () => string): string {
 		`⏱ Worker Timeout: ${getTimeoutLabel()}\n` +
 		`🤖 Model: ${config.copilotModel}\n` +
 		`🧠 Thinking: ${config.thinkingLevel}\n` +
+		`💡 Reasoning: ${config.reasoningEffort}\n` +
 		`📝 Verbose: ${config.verboseMode ? "✅ ON" : "❌ OFF"}\n` +
 		`📊 Usage: ${config.usageMode}\n` +
 		`🔧 Show Reasoning: ${config.showReasoning ? "✅ ON" : "❌ OFF"}\n\n` +
@@ -147,6 +148,20 @@ export function createMenus(getUptimeStr: () => string) {
 				ctx.menu.update();
 				await ctx.editMessageText(buildSettingsText(getUptimeStr));
 				await ctx.answerCallbackQuery(`Verbose ${config.verboseMode ? "ON" : "OFF"}`);
+			},
+		)
+		.row()
+		.text(
+			() => `💡 Reasoning: ${config.reasoningEffort}`,
+			async (ctx) => {
+				const efforts = ["low", "medium", "high"] as const;
+				const idx = efforts.indexOf(config.reasoningEffort);
+				const next = efforts[(idx + 1) % efforts.length];
+				config.reasoningEffort = next;
+				persistEnvVar("REASONING_EFFORT", next);
+				ctx.menu.update();
+				await ctx.editMessageText(buildSettingsText(getUptimeStr));
+				await ctx.answerCallbackQuery(`Reasoning → ${next}`);
 			},
 		)
 		.row()

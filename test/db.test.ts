@@ -17,19 +17,19 @@ vi.mock("../src/paths.js", () => ({
 
 // Import after mocking
 import {
-    addMemory,
-    closeDb,
-    deleteState,
-    getConversationContext,
-    getDb,
-    getMemorySummary,
-    getRecentConversation,
-    getState,
-    logConversation,
-    removeMemory,
-    searchMemories,
-    setConversationTelegramMsgId,
-    setState,
+	addMemory,
+	closeDb,
+	deleteState,
+	getConversationContext,
+	getDb,
+	getMemorySummary,
+	getRecentConversation,
+	getState,
+	logConversation,
+	removeMemory,
+	searchMemories,
+	setConversationTelegramMsgId,
+	setState,
 } from "../src/store/db.js";
 
 afterAll(() => {
@@ -210,7 +210,9 @@ describe("memory management", () => {
 	it("searchMemories finds by keyword after FTS rebuild", () => {
 		addMemory("fact", "The sky is blue on clear days");
 		// Rebuild FTS5 index so newly inserted data is searchable
-		try { getDb().exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')"); } catch {}
+		try {
+			getDb().exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+		} catch {}
 		const results = searchMemories("blue");
 		expect(results.length).toBeGreaterThan(0);
 		expect(results.some((r) => r.content.includes("blue"))).toBe(true);
@@ -241,7 +243,9 @@ describe("memory management", () => {
 	it("searchMemories with keyword and category combined", () => {
 		addMemory("fact", "Cats are curious animals");
 		addMemory("preference", "Cats are my favorite");
-		try { getDb().exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')"); } catch {}
+		try {
+			getDb().exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+		} catch {}
 		const results = searchMemories("Cats", "fact");
 		expect(results.length).toBeGreaterThan(0);
 		expect(results.every((r) => r.category === "fact")).toBe(true);

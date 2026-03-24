@@ -168,7 +168,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 						})
 						.finally(() => {
 							// Auto-destroy background workers after completion to free memory (~400MB per worker)
-							session.destroy().catch(() => {});
+							session.disconnect().catch(() => {});
 							deps.workers.delete(args.name);
 							try {
 								getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
@@ -229,7 +229,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					})
 					.finally(() => {
 						// Auto-destroy after each send_to_worker dispatch to free memory
-						worker.session.destroy().catch(() => {});
+						worker.session.disconnect().catch(() => {});
 						deps.workers.delete(args.name);
 						try {
 							getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
@@ -283,7 +283,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					return `No worker named '${args.name}'.`;
 				}
 				try {
-					await worker.session.destroy();
+					await worker.session.disconnect();
 				} catch {
 					// Session may already be gone
 				}
@@ -321,9 +321,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				working_dir: z.string().describe("Absolute path to working directory for all members"),
 			}),
 			handler: async (args) => {
-				const activeTeams = Array.from(deps.teams.values()).filter(
-					(t) => t.completedMembers.size < t.members.length,
-				);
+				const activeTeams = Array.from(deps.teams.values()).filter((t) => t.completedMembers.size < t.members.length);
 				if (activeTeams.length >= MAX_CONCURRENT_TEAMS) {
 					return `❌ Maximum ${MAX_CONCURRENT_TEAMS} concurrent teams reached. Wait for an active team to complete.`;
 				}
@@ -351,9 +349,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				const teamId = args.team_name;
 				const originChannel = getCurrentSourceChannel();
 
-				const { createTeam: dbCreateTeam, addTeamMember: dbAddTeamMember } = await import(
-					"../store/db.js"
-				);
+				const { createTeam: dbCreateTeam, addTeamMember: dbAddTeamMember } = await import("../store/db.js");
 				dbCreateTeam(teamId, args.task_description, originChannel);
 
 				const teamInfo: TeamInfo = {
@@ -417,7 +413,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 								deps.onWorkerComplete(member.name, errMsg);
 							})
 							.finally(() => {
-								session.destroy().catch(() => {});
+								session.disconnect().catch(() => {});
 								deps.workers.delete(member.name);
 								try {
 									getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(member.name);
@@ -442,10 +438,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 		defineTool("get_team_status", {
 			description: "Get the status of agent teams — shows active teams, their members, and progress.",
 			parameters: z.object({
-				team_name: z
-					.string()
-					.optional()
-					.describe("Specific team name to check. Omit to list all active teams."),
+				team_name: z.string().optional().describe("Specific team name to check. Omit to list all active teams."),
 			}),
 			handler: async (args) => {
 				if (args.team_name) {
@@ -469,9 +462,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 								: worker?.status === "error"
 									? "❌ error"
 									: "🔄 pending";
-						const elapsed = worker?.startedAt
-							? `${Math.round((Date.now() - worker.startedAt) / 1000)}s`
-							: "";
+						const elapsed = worker?.startedAt ? `${Math.round((Date.now() - worker.startedAt) / 1000)}s` : "";
 						lines.push(`  ${status} ${memberName} ${elapsed}`);
 					}
 					return lines.join("\n");
@@ -502,11 +493,8 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				const team = deps.teams.get(args.team_name);
 				if (!team) return `❌ Team '${args.team_name}' not found.`;
 
-				const activeMembers = team.members.filter(
-					(name) => !team.completedMembers.has(name) && deps.workers.has(name),
-				);
-				if (activeMembers.length === 0)
-					return `❌ No active members in team '${args.team_name}'.`;
+				const activeMembers = team.members.filter((name) => !team.completedMembers.has(name) && deps.workers.has(name));
+				if (activeMembers.length === 0) return `❌ No active members in team '${args.team_name}'.`;
 
 				let sent = 0;
 				for (const memberName of activeMembers) {
@@ -514,10 +502,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					if (worker && worker.status !== "error") {
 						try {
 							worker.session
-								.sendAndWait(
-									{ prompt: `[Team message from coordinator]: ${args.message}` },
-									60_000,
-								)
+								.sendAndWait({ prompt: `[Team message from coordinator]: ${args.message}` }, 60_000)
 								.catch(() => {});
 							sent++;
 						} catch {}

@@ -92,11 +92,7 @@ const SUGGESTION_RULES: SuggestionRule[] = [
  * Build smart suggestion keyboard based on the AI response content.
  * Returns an InlineKeyboard with up to 4 relevant action buttons.
  */
-export function buildSmartSuggestions(
-	response: string,
-	prompt: string,
-	maxButtons = 4,
-): InlineKeyboard | undefined {
+export function buildSmartSuggestions(response: string, prompt: string, maxButtons = 4): InlineKeyboard | undefined {
 	const matching = SUGGESTION_RULES.filter((rule) => rule.test(response, prompt));
 
 	if (matching.length === 0) return undefined;
@@ -123,7 +119,12 @@ export function buildSmartSuggestions(
 const pendingPrompts = new Map<string, { prompt: string; response: string; timestamp: number }>();
 
 /** Store the context for smart suggestion callbacks. */
-export function storeSuggestionContext(callbackPrefix: string, timeKey: string, prompt: string, response: string): void {
+export function storeSuggestionContext(
+	callbackPrefix: string,
+	timeKey: string,
+	prompt: string,
+	response: string,
+): void {
 	const key = `${callbackPrefix}:${timeKey}`;
 	pendingPrompts.set(key, { prompt, response, timestamp: Date.now() });
 

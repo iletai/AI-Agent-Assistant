@@ -1,6 +1,6 @@
 import type { Bot } from "grammy";
 import { config } from "../../config.js";
-import { sendToOrchestrator } from "../../copilot/orchestrator.js";
+import { type Attachment, sendToOrchestrator } from "../../copilot/orchestrator.js";
 import { logInfo } from "../log-channel.js";
 import { sendFormattedReply, scheduleTempCleanup } from "./helpers.js";
 
@@ -27,26 +27,24 @@ export function registerMediaHandlers(bot: Bot): void {
 			}
 			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
 
-			const { mkdtempSync, writeFileSync } = await import("fs");
-			const { join } = await import("path");
-			const { tmpdir } = await import("os");
-			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-photo-"));
-			const ext = filePath.split(".").pop() || "jpg";
-			const localPath = join(tmpDir, `photo.${ext}`);
-
 			const response = await fetch(url);
 			const buffer = Buffer.from(await response.arrayBuffer());
-			writeFileSync(localPath, buffer);
-			scheduleTempCleanup(tmpDir);
+			const base64Data = buffer.toString("base64");
+			const ext = filePath.split(".").pop() || "jpg";
+			const mimeType = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : "image/jpeg";
 
-			const prompt = `[User sent a photo saved at: ${localPath}]\n\nCaption: ${caption}\n\nPlease analyze this image. The file is at ${localPath} — you can use bash to view it with tools if needed.`;
+			const attachment: Attachment = { type: "blob", data: base64Data, mimeType };
 
 			sendToOrchestrator(
-				prompt,
+				caption,
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean) => {
 					if (done) void sendFormattedReply(bot, chatId, text, { replyTo: userMessageId });
 				},
+				undefined,
+				undefined,
+				0,
+				[attachment],
 			);
 		} catch (err) {
 			await ctx.reply(`❌ Error processing photo: ${err instanceof Error ? err.message : String(err)}`, {

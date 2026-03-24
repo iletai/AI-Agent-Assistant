@@ -82,9 +82,12 @@ let sessionCreatePromise: Promise<CopilotSession> | undefined;
 // Tracks in-flight context recovery injection so we don't race with real messages
 let recoveryInjectionPromise: Promise<void> | undefined;
 
+export type Attachment = { type: string; data: string; mimeType: string };
+
 // Message queue — serializes access to the single persistent session
 type QueuedMessage = {
 	prompt: string;
+	attachments?: Attachment[];
 	callback: MessageCallback;
 	onToolEvent?: ToolEventCallback;
 	onUsage?: UsageCallback;
@@ -283,6 +286,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 				model: config.copilotModel,
 				configDir: SESSIONS_DIR,
 				streaming: true,
+				reasoningEffort: config.reasoningEffort,
 				systemMessage: {
 					content: getOrchestratorSystemMessage(memorySummary || undefined, {
 						selfEditEnabled: config.selfEditEnabled,
@@ -309,6 +313,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 		model: config.copilotModel,
 		configDir: SESSIONS_DIR,
 		streaming: true,
+		reasoningEffort: config.reasoningEffort,
 		systemMessage: {
 			content: getOrchestratorSystemMessage(memorySummary || undefined, {
 				selfEditEnabled: config.selfEditEnabled,
@@ -399,6 +404,7 @@ async function executeOnSession(
 	callback: MessageCallback,
 	onToolEvent?: ToolEventCallback,
 	onUsage?: UsageCallback,
+	attachments?: Attachment[],
 ): Promise<string> {
 	const session = await ensureOrchestratorSession();
 
@@ -457,7 +463,11 @@ async function executeOnSession(
 	});
 
 	try {
-		const result = await session.sendAndWait({ prompt }, 60_000);
+		const sendPayload: { prompt: string; attachments?: Attachment[] } = { prompt };
+		if (attachments?.length) {
+			sendPayload.attachments = attachments;
+		}
+		const result = await session.sendAndWait(sendPayload as any, 60_000);
 		// Allow late-arriving events (e.g. assistant.usage) to be processed
 		await new Promise((r) => setTimeout(r, 150));
 		const finalContent = result?.data?.content || accumulated || "(No response)";
@@ -503,7 +513,7 @@ async function processQueue(): Promise<void> {
 		const item = messageQueue.shift()!;
 		currentSourceChannel = item.sourceChannel;
 		try {
-			const result = await executeOnSession(item.prompt, item.callback, item.onToolEvent, item.onUsage);
+			const result = await executeOnSession(item.prompt, item.callback, item.onToolEvent, item.onUsage, item.attachments);
 			item.resolve(result);
 		} catch (err) {
 			item.reject(err);
@@ -530,6 +540,7 @@ export async function sendToOrchestrator(
 	onToolEvent?: ToolEventCallback,
 	onUsage?: UsageCallback,
 	_autoContinueCount = 0,
+	attachments?: Attachment[],
 ): Promise<void> {
 	const sourceLabel = source.type === "telegram" ? "telegram" : source.type === "tui" ? "tui" : "background";
 	logMessage("in", sourceLabel, prompt);
@@ -572,6 +583,7 @@ export async function sendToOrchestrator(
 				const finalContent = await new Promise<string>((resolve, reject) => {
 					const item: QueuedMessage = {
 						prompt: taggedPrompt,
+						attachments,
 						callback,
 						onToolEvent,
 						onUsage,
@@ -710,7 +722,7 @@ export async function resetSession(): Promise<void> {
 	// Destroy the existing session
 	if (orchestratorSession) {
 		try {
-			await orchestratorSession.destroy();
+			await orchestratorSession.disconnect();
 		} catch {}
 		orchestratorSession = undefined;
 	}

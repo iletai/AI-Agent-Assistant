@@ -9,7 +9,6 @@ export async function getClient(): Promise<CopilotClient> {
 	if (!client) {
 		client = new CopilotClient({
 			autoStart: true,
-			autoRestart: true,
 		});
 		await client.start();
 	}

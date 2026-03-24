@@ -17,6 +17,7 @@ const configSchema = z.object({
 	LOG_CHANNEL_ID: z.string().optional(),
 	NODE_EXTRA_CA_CERTS: z.string().optional(),
 	OPENAI_API_KEY: z.string().optional(),
+	REASONING_EFFORT: z.string().optional(),
 });
 
 const raw = configSchema.parse(process.env);
@@ -83,6 +84,8 @@ export const config = {
 	thinkingLevel: (process.env.THINKING_LEVEL || "off") as "off" | "low" | "medium" | "high",
 	/** Group chat: when true, bot only responds when mentioned in groups */
 	groupMentionOnly: process.env.GROUP_MENTION_ONLY !== "false",
+	/** Reasoning effort: low | medium | high */
+	reasoningEffort: (process.env.REASONING_EFFORT || "medium") as "low" | "medium" | "high",
 };
 
 /** Persist an env variable to ~/.nzb/.env */

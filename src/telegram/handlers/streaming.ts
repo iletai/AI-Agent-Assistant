@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Bot, InlineKeyboard } from "grammy";
 import { config } from "../../config.js";
 import type { ToolEventCallback, UsageCallback } from "../../copilot/orchestrator.js";
@@ -87,6 +88,7 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 		// prevents push notification spam for very short initial chunks (inspired by OpenClaw's draft-stream).
 		const MIN_INITIAL_CHARS = 80;
 		const handlerStartTime = Date.now();
+		const requestId = randomUUID();
 
 		const enqueueEdit = (text: string) => {
 			if (finalized || text === lastEditedText) return;
@@ -116,6 +118,7 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 							return;
 						}
 					} else {
+						if (finalized) return;
 						try {
 							await editSafe(getBot()!.api, chatId, placeholderMsgId, safeText);
 						} catch (err) {
@@ -214,6 +217,7 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 					void logInfo(`✅ Response done (${elapsed}s, ${toolHistory.length} tools, ${text.length} chars)`);
 					// Return the edit chain so callers can await final delivery
 					return editChain.then(async () => {
+					  try {
 						// Format error messages with a distinct visual
 						const isError = text.startsWith("Error:");
 						if (isError) {
@@ -415,6 +419,10 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 						} catch {
 							/* reactions may not be available */
 						}
+					  } finally {
+						placeholderMsgId = undefined;
+						lastEditedText = "";
+					  }
 					});
 				} else {
 					// Progressive streaming: update placeholder periodically with delta threshold

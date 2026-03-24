@@ -13,7 +13,8 @@ let initOrchestrator: any;
 let setMessageLogger: any;
 let cancelCurrentMessage: any;
 
-const TIMEOUT_RESPONSE = "Partial content here\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
+const TIMEOUT_RESPONSE =
+	"Partial content here\n\n---\n\n⏱ Response was cut short (timeout). You can ask me to continue.";
 const NORMAL_RESPONSE = "Here is a complete answer.";
 
 beforeEach(async () => {

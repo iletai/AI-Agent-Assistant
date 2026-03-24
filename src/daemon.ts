@@ -228,7 +228,7 @@ async function shutdown(): Promise<void> {
 	}
 
 	// Destroy all active worker sessions to free memory
-	await Promise.allSettled(Array.from(workers.values()).map((w) => w.session.destroy()));
+	await Promise.allSettled(Array.from(workers.values()).map((w) => w.session.disconnect()));
 	workers.clear();
 
 	try {
@@ -264,7 +264,7 @@ export async function restartDaemon(): Promise<void> {
 	}
 
 	// Destroy all active worker sessions to free memory
-	await Promise.allSettled(Array.from(activeWorkers.values()).map((w) => w.session.destroy()));
+	await Promise.allSettled(Array.from(activeWorkers.values()).map((w) => w.session.disconnect()));
 	activeWorkers.clear();
 
 	try {

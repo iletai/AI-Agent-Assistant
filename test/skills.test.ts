@@ -17,7 +17,13 @@ vi.mock("../src/paths.js", () => ({
 }));
 
 // Must import AFTER mocking
-import { clearSkillDirsCache, createSkill, getSkillDirectories, listSkills, removeSkill } from "../src/copilot/skills.js";
+import {
+	clearSkillDirsCache,
+	createSkill,
+	getSkillDirectories,
+	listSkills,
+	removeSkill,
+} from "../src/copilot/skills.js";
 
 afterEach(() => {
 	clearSkillDirsCache();

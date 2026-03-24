@@ -28,8 +28,7 @@ interface ReactionAction {
 const REACTION_ACTIONS: ReactionAction[] = [
 	{
 		emoji: "🤔",
-		prompt: (text) =>
-			`Explain and analyze the following message in detail. Be thorough but concise:\n\n"${text}"`,
+		prompt: (text) => `Explain and analyze the following message in detail. Be thorough but concise:\n\n"${text}"`,
 		label: "Explaining",
 		ackEmoji: "👀",
 	},
@@ -49,8 +48,7 @@ const REACTION_ACTIONS: ReactionAction[] = [
 	},
 	{
 		emoji: "🤓",
-		prompt: (text) =>
-			`Summarize the following message in 2-3 concise bullet points:\n\n"${text}"`,
+		prompt: (text) => `Summarize the following message in 2-3 concise bullet points:\n\n"${text}"`,
 		label: "Summarizing",
 		ackEmoji: "🤓",
 	},
@@ -111,17 +109,13 @@ export function registerReactionHandlers(bot: Bot): void {
 
 				const prompt = action.prompt(msgContent);
 
-				sendToOrchestrator(
-					prompt,
-					{ type: "telegram", chatId, messageId },
-					(text: string, done: boolean) => {
-						if (done) {
-							void sendFormattedReply(bot, chatId, `${action.emoji} <b>${action.label}:</b>\n\n${text}`, {
-								replyTo: messageId,
-							});
-						}
-					},
-				);
+				sendToOrchestrator(prompt, { type: "telegram", chatId, messageId }, (text: string, done: boolean) => {
+					if (done) {
+						void sendFormattedReply(bot, chatId, `${action.emoji} <b>${action.label}:</b>\n\n${text}`, {
+							replyTo: messageId,
+						});
+					}
+				});
 			} else {
 				await bot.api.sendMessage(
 					chatId,

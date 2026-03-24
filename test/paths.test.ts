@@ -10,15 +10,15 @@ vi.mock("fs", async (importOriginal) => {
 
 import { mkdirSync } from "fs";
 import {
-    API_TOKEN_PATH,
-    DB_PATH,
-    ensureNZBHome,
-    ENV_PATH,
-    HISTORY_PATH,
-    NZB_HOME,
-    SESSIONS_DIR,
-    SKILLS_DIR,
-    TUI_DEBUG_LOG_PATH,
+	API_TOKEN_PATH,
+	DB_PATH,
+	ensureNZBHome,
+	ENV_PATH,
+	HISTORY_PATH,
+	NZB_HOME,
+	SESSIONS_DIR,
+	SKILLS_DIR,
+	TUI_DEBUG_LOG_PATH,
 } from "../src/paths.js";
 
 const home = homedir();
@@ -58,7 +58,16 @@ describe("path constants", () => {
 	});
 
 	it("all paths are absolute", () => {
-		for (const p of [NZB_HOME, DB_PATH, ENV_PATH, SKILLS_DIR, SESSIONS_DIR, HISTORY_PATH, TUI_DEBUG_LOG_PATH, API_TOKEN_PATH]) {
+		for (const p of [
+			NZB_HOME,
+			DB_PATH,
+			ENV_PATH,
+			SKILLS_DIR,
+			SESSIONS_DIR,
+			HISTORY_PATH,
+			TUI_DEBUG_LOG_PATH,
+			API_TOKEN_PATH,
+		]) {
 			expect(p.startsWith("/") || /^[A-Z]:\\/i.test(p)).toBe(true);
 		}
 	});

@@ -376,29 +376,23 @@ export function getMemorySummary(): string {
 
 // ── Agent Teams CRUD ──────────────────────────────────────────
 
-export function createTeam(
-	id: string,
-	taskDescription: string,
-	originChannel?: string,
-): void {
+export function createTeam(id: string, taskDescription: string, originChannel?: string): void {
 	const db = getDb();
-	db.prepare(
-		`INSERT INTO agent_teams (id, task_description, origin_channel) VALUES (?, ?, ?)`,
-	).run(id, taskDescription, originChannel ?? null);
+	db.prepare(`INSERT INTO agent_teams (id, task_description, origin_channel) VALUES (?, ?, ?)`).run(
+		id,
+		taskDescription,
+		originChannel ?? null,
+	);
 }
 
-export function addTeamMember(
-	teamId: string,
-	workerName: string,
-	role: string,
-): void {
+export function addTeamMember(teamId: string, workerName: string, role: string): void {
 	const db = getDb();
-	db.prepare(
-		`INSERT INTO team_members (team_id, worker_name, role, status) VALUES (?, ?, ?, 'pending')`,
-	).run(teamId, workerName, role);
-	db.prepare(
-		`UPDATE agent_teams SET member_count = member_count + 1 WHERE id = ?`,
-	).run(teamId);
+	db.prepare(`INSERT INTO team_members (team_id, worker_name, role, status) VALUES (?, ?, ?, 'pending')`).run(
+		teamId,
+		workerName,
+		role,
+	);
+	db.prepare(`UPDATE agent_teams SET member_count = member_count + 1 WHERE id = ?`).run(teamId);
 }
 
 export function updateTeamMemberResult(
@@ -412,23 +406,21 @@ export function updateTeamMemberResult(
 		`UPDATE team_members SET result = ?, status = ?, completed_at = CURRENT_TIMESTAMP WHERE team_id = ? AND worker_name = ?`,
 	).run(result, status, teamId, workerName);
 	if (status === "completed" || status === "error") {
-		db.prepare(
-			`UPDATE agent_teams SET completed_count = completed_count + 1 WHERE id = ?`,
-		).run(teamId);
+		db.prepare(`UPDATE agent_teams SET completed_count = completed_count + 1 WHERE id = ?`).run(teamId);
 	}
 }
 
-export function getTeam(
-	id: string,
-): {
-	id: string;
-	status: string;
-	task_description: string;
-	origin_channel: string | null;
-	member_count: number;
-	completed_count: number;
-	aggregated_result: string | null;
-} | undefined {
+export function getTeam(id: string):
+	| {
+			id: string;
+			status: string;
+			task_description: string;
+			origin_channel: string | null;
+			member_count: number;
+			completed_count: number;
+			aggregated_result: string | null;
+	  }
+	| undefined {
 	const db = getDb();
 	return db.prepare(`SELECT * FROM agent_teams WHERE id = ?`).get(id) as
 		| {
@@ -448,9 +440,7 @@ export function getTeamMembers(
 ): { worker_name: string; role: string; status: string; result: string | null }[] {
 	const db = getDb();
 	return db
-		.prepare(
-			`SELECT worker_name, role, status, result FROM team_members WHERE team_id = ? ORDER BY id`,
-		)
+		.prepare(`SELECT worker_name, role, status, result FROM team_members WHERE team_id = ? ORDER BY id`)
 		.all(teamId) as {
 		worker_name: string;
 		role: string;
@@ -496,9 +486,7 @@ export function getActiveTeams(): {
 export function getTeamByWorkerName(workerName: string): string | undefined {
 	const db = getDb();
 	const row = db
-		.prepare(
-			`SELECT team_id FROM team_members WHERE worker_name = ? AND status IN ('pending', 'running') LIMIT 1`,
-		)
+		.prepare(`SELECT team_id FROM team_members WHERE worker_name = ? AND status IN ('pending', 'running') LIMIT 1`)
 		.get(workerName) as { team_id: string } | undefined;
 	return row?.team_id;
 }

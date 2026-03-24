@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-    chunkMessage,
-    escapeHtml,
-    escapeSegment,
-    formatToolSummaryExpandable,
-    toTelegramHTML,
-    toTelegramMarkdown,
+	chunkMessage,
+	escapeHtml,
+	escapeSegment,
+	formatToolSummaryExpandable,
+	toTelegramHTML,
+	toTelegramMarkdown,
 } from "../src/telegram/formatter.js";
 
 // ─── escapeHtml ───────────────────────────────────────────────
@@ -23,9 +23,7 @@ describe("escapeHtml", () => {
 		expect(escapeHtml("a && b &&& c")).toBe("a &amp;&amp; b &amp;&amp;&amp; c");
 	});
 	it("escapes all three characters together", () => {
-		expect(escapeHtml("<script>alert('xss')&</script>")).toBe(
-			"&lt;script&gt;alert('xss')&amp;&lt;/script&gt;",
-		);
+		expect(escapeHtml("<script>alert('xss')&</script>")).toBe("&lt;script&gt;alert('xss')&amp;&lt;/script&gt;");
 	});
 	it("does not double-escape already-escaped text", () => {
 		expect(escapeHtml("&amp;")).toBe("&amp;amp;");
@@ -98,16 +96,13 @@ describe("toTelegramHTML", () => {
 
 	describe("lists", () => {
 		it("unordered list with dash", () => expect(toTelegramHTML("- item 1\n- item 2")).toBe("• item 1\n• item 2"));
-		it("unordered list with asterisk", () =>
-			expect(toTelegramHTML("* item 1\n* item 2")).toBe("• item 1\n• item 2"));
+		it("unordered list with asterisk", () => expect(toTelegramHTML("* item 1\n* item 2")).toBe("• item 1\n• item 2"));
 		it("list with formatting", () =>
 			expect(toTelegramHTML("- **bold item**\n- *italic item*")).toBe("• <b>bold item</b>\n• <i>italic item</i>"));
 		it("list with code", () =>
 			expect(toTelegramHTML("- `code item`\n- normal")).toBe("• <code>code item</code>\n• normal"));
-		it("ordered list passes through", () =>
-			expect(toTelegramHTML("1. first\n2. second")).toBe("1. first\n2. second"));
-		it("nested unordered list", () =>
-			expect(toTelegramHTML("- outer\n  - inner")).toBe("• outer\n  • inner"));
+		it("ordered list passes through", () => expect(toTelegramHTML("1. first\n2. second")).toBe("1. first\n2. second"));
+		it("nested unordered list", () => expect(toTelegramHTML("- outer\n  - inner")).toBe("• outer\n  • inner"));
 	});
 
 	describe("blockquotes", () => {
@@ -149,7 +144,7 @@ describe("toTelegramHTML", () => {
 			expect(toTelegramHTML("```\na < b & c > d\n```")).toBe("<pre><code>a &lt; b &amp; c &gt; d</code></pre>"));
 		it("fenced with python language", () =>
 			expect(toTelegramHTML("```python\nprint('hello')\n```")).toBe(
-				'<pre><code class="language-python">print(\'hello\')</code></pre>',
+				"<pre><code class=\"language-python\">print('hello')</code></pre>",
 			));
 		it("multiline code block", () =>
 			expect(toTelegramHTML("```js\nconst a = 1;\nconst b = 2;\n```")).toBe(
@@ -285,7 +280,7 @@ describe("chunkMessage", () => {
 	});
 
 	it("splits long text without newlines at spaces", () => {
-		const text = ("word ".repeat(900)).trim();
+		const text = "word ".repeat(900).trim();
 		const chunks = chunkMessage(text);
 		expect(chunks.length).toBeGreaterThan(1);
 		for (const chunk of chunks) {
@@ -327,7 +322,7 @@ describe("chunkMessage", () => {
 	});
 
 	it("handles multiple splits for very long text", () => {
-		const text = ("line content here\n").repeat(2000);
+		const text = "line content here\n".repeat(2000);
 		const chunks = chunkMessage(text);
 		expect(chunks.length).toBeGreaterThan(2);
 		for (const chunk of chunks) {
@@ -405,9 +400,7 @@ describe("formatToolSummaryExpandable", () => {
 	});
 
 	it("formats tool with all fields", () => {
-		const result = formatToolSummaryExpandable([
-			{ name: "execute", durationMs: 2500, detail: "Running tests" },
-		]);
+		const result = formatToolSummaryExpandable([{ name: "execute", durationMs: 2500, detail: "Running tests" }]);
 		expect(result).toContain("execute");
 		expect(result).toContain("2.5s");
 		expect(result).toContain("Running tests");
