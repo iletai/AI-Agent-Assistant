@@ -2,14 +2,14 @@ import { approveAll, type CopilotClient, type CopilotSession } from "@github/cop
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import {
-    completeTeam,
-    deleteState,
-    getMemorySummary,
-    getRecentConversation,
-    getState,
-    logConversation,
-    setState,
-    updateTeamMemberResult,
+	completeTeam,
+	deleteState,
+	getMemorySummary,
+	getRecentConversation,
+	getState,
+	logConversation,
+	setState,
+	updateTeamMemberResult,
 } from "../store/db.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
@@ -79,6 +79,8 @@ let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
 let orchestratorSession: CopilotSession | undefined;
 // Coalesces concurrent ensureOrchestratorSession calls
 let sessionCreatePromise: Promise<CopilotSession> | undefined;
+// Tracks in-flight context recovery injection so we don't race with real messages
+let recoveryInjectionPromise: Promise<void> | undefined;
 
 // Message queue — serializes access to the single persistent session
 type QueuedMessage = {
@@ -325,19 +327,25 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 	console.log(`[nzb] Created orchestrator session ${session.sessionId.slice(0, 8)}…`);
 
 	// Recover conversation context if available (session was lost, not first run)
-	// Fire-and-forget: don't block the first real message behind recovery injection
+	// Runs concurrently but is awaited before any real message is sent on the session
 	const recentHistory = getRecentConversation(10);
 	if (recentHistory) {
-		console.log(`[nzb] Injecting recent conversation context into new session (non-blocking)`);
-		session
+		console.log(`[nzb] Injecting recent conversation context into new session`);
+		recoveryInjectionPromise = session
 			.sendAndWait(
 				{
 					prompt: `[System: Session recovered] Your previous session was lost. Here's the recent conversation for context — do NOT respond to these messages, just absorb the context silently:\n\n${recentHistory}\n\n(End of recovery context. Wait for the next real message.)`,
 				},
 				20_000,
 			)
+			.then(() => {
+				console.log(`[nzb] Context recovery injection completed`);
+			})
 			.catch((err) => {
 				console.log(`[nzb] Context recovery injection failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+			})
+			.finally(() => {
+				recoveryInjectionPromise = undefined;
 			});
 	}
 
@@ -393,6 +401,13 @@ async function executeOnSession(
 	onUsage?: UsageCallback,
 ): Promise<string> {
 	const session = await ensureOrchestratorSession();
+
+	// Wait for any in-flight context recovery injection to finish before sending
+	if (recoveryInjectionPromise) {
+		console.log(`[nzb] Waiting for context recovery injection to complete before sending…`);
+		await recoveryInjectionPromise;
+	}
+
 	currentCallback = callback;
 
 	let accumulated = "";
@@ -601,13 +616,8 @@ export async function sendToOrchestrator(
 
 				// Auto-continue: if the response was cut short by timeout, automatically
 				// send a follow-up "Continue" message so the user doesn't have to
-				if (
-					finalContent.includes("⏱ Response was cut short (timeout)") &&
-					_autoContinueCount < MAX_AUTO_CONTINUE
-				) {
-					console.log(
-						`[nzb] Auto-continuing after timeout (${_autoContinueCount + 1}/${MAX_AUTO_CONTINUE})…`,
-					);
+				if (finalContent.includes("⏱ Response was cut short (timeout)") && _autoContinueCount < MAX_AUTO_CONTINUE) {
+					console.log(`[nzb] Auto-continuing after timeout (${_autoContinueCount + 1}/${MAX_AUTO_CONTINUE})…`);
 					await sleep(1000);
 					void sendToOrchestrator(
 						"Continue from where you left off. Do not repeat what was already said.",
