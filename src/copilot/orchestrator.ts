@@ -475,6 +475,16 @@ async function executeOnSession(
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 
+		// Vision not supported — the session is now tainted with image data in its history,
+		// so ALL subsequent messages would fail. Force-recreate the session to recover.
+		// The retry (with stripped attachments) is handled by sendToOrchestrator's retry loop.
+		if (/not supported for vision/i.test(msg)) {
+			console.log(`[nzb] Model '${config.copilotModel}' does not support vision — destroying tainted session`);
+			orchestratorSession = undefined;
+			deleteState(ORCHESTRATOR_SESSION_KEY);
+			throw err;
+		}
+
 		// On timeout, deliver whatever was accumulated instead of retrying from scratch
 		if (/timeout/i.test(msg) && accumulated.length > 0) {
 			console.log(`[nzb] Timeout — delivering ${accumulated.length} chars of partial content`);
@@ -513,7 +523,13 @@ async function processQueue(): Promise<void> {
 		const item = messageQueue.shift()!;
 		currentSourceChannel = item.sourceChannel;
 		try {
-			const result = await executeOnSession(item.prompt, item.callback, item.onToolEvent, item.onUsage, item.attachments);
+			const result = await executeOnSession(
+				item.prompt,
+				item.callback,
+				item.onToolEvent,
+				item.onUsage,
+				item.attachments,
+			);
 			item.resolve(result);
 		} catch (err) {
 			item.reject(err);
@@ -647,6 +663,20 @@ export async function sendToOrchestrator(
 				// Don't retry cancelled messages
 				if (/cancelled|abort/i.test(msg)) {
 					return;
+				}
+
+				// Vision not supported — strip attachments and retry with text-only prompt.
+				// executeOnSession already destroyed the tainted session.
+				if (/not supported for vision/i.test(msg)) {
+					console.log(`[nzb] Vision not supported — retrying without attachments`);
+					attachments = undefined;
+					taggedPrompt =
+						`[System: The current model '${config.copilotModel}' does not support image/vision analysis. ` +
+						`The image path is already included in the user's message below. ` +
+						`Please inform the user that the current model doesn't support direct image analysis, ` +
+						`and suggest switching to a vision-capable model (e.g. gpt-4o, claude-sonnet-4, gemini-2.0-flash) ` +
+						`using the /model command.]\n\n${taggedPrompt}`;
+					continue;
 				}
 
 				if (isRecoverableError(err) && attempt < MAX_RETRIES) {

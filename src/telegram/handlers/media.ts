@@ -2,7 +2,7 @@ import type { Bot } from "grammy";
 import { config } from "../../config.js";
 import { type Attachment, sendToOrchestrator } from "../../copilot/orchestrator.js";
 import { logInfo } from "../log-channel.js";
-import { sendFormattedReply, scheduleTempCleanup } from "./helpers.js";
+import { scheduleTempCleanup, sendFormattedReply } from "./helpers.js";
 
 /** Register photo, document, and voice message handlers on the bot. */
 export function registerMediaHandlers(bot: Bot): void {
@@ -33,10 +33,20 @@ export function registerMediaHandlers(bot: Bot): void {
 			const ext = filePath.split(".").pop() || "jpg";
 			const mimeType = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : "image/jpeg";
 
+			// Save to disk first as fallback — if vision fails, the AI can still reference the file
+			const { mkdtempSync, writeFileSync } = await import("fs");
+			const { join } = await import("path");
+			const { tmpdir } = await import("os");
+			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-photo-"));
+			const localPath = join(tmpDir, `photo.${ext}`);
+			writeFileSync(localPath, buffer);
+			scheduleTempCleanup(tmpDir);
+
 			const attachment: Attachment = { type: "blob", data: base64Data, mimeType };
+			const promptWithPath = `${caption}\n\n[Image also saved to: ${localPath}]`;
 
 			sendToOrchestrator(
-				caption,
+				promptWithPath,
 				{ type: "telegram", chatId, messageId: userMessageId },
 				(text: string, done: boolean) => {
 					if (done) void sendFormattedReply(bot, chatId, text, { replyTo: userMessageId });
