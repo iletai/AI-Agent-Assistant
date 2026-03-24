@@ -1,4 +1,4 @@
-const TELEGRAM_MAX_LENGTH = 4096;
+export const TELEGRAM_MAX_LENGTH = 4096;
 // Reserve space for tag closure and pagination prefix
 const CHUNK_TARGET = TELEGRAM_MAX_LENGTH - 40;
 
@@ -32,6 +32,12 @@ export function isThreadNotFoundError(err: unknown): boolean {
 export function isChatNotFoundError(err: unknown): boolean {
 	const msg = err instanceof Error ? err.message : String(err);
 	return /chat not found/i.test(msg);
+}
+
+/** Detect Telegram "message is too long" errors. */
+export function isMessageTooLongError(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return /message is too long/i.test(msg);
 }
 
 /**

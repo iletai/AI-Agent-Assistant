@@ -3,12 +3,14 @@ import { config } from "../../config.js";
 import type { ToolEventCallback, UsageCallback } from "../../copilot/orchestrator.js";
 import { getQueueSize, sendToOrchestrator } from "../../copilot/orchestrator.js";
 import {
-    chunkMessage,
-    escapeHtml,
-    formatToolSummaryExpandable,
-    isHtmlParseError,
-    isMessageNotModifiedError,
-    toTelegramHTML,
+	chunkMessage,
+	escapeHtml,
+	formatToolSummaryExpandable,
+	isHtmlParseError,
+	isMessageNotModifiedError,
+	isMessageTooLongError,
+	TELEGRAM_MAX_LENGTH,
+	toTelegramHTML,
 } from "../formatter.js";
 import { logDebug, logError, logInfo } from "../log-channel.js";
 import { editSafe } from "../safe-api.js";
@@ -88,12 +90,17 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 
 		const enqueueEdit = (text: string) => {
 			if (finalized || text === lastEditedText) return;
+			// Clamp streaming previews to Telegram's limit — these are ephemeral
+			let safeText = text;
+			if (safeText.length > TELEGRAM_MAX_LENGTH) {
+				safeText = safeText.slice(0, TELEGRAM_MAX_LENGTH - 4) + " ⋯";
+			}
 			editChain = editChain
 				.then(async () => {
-					if (finalized || text === lastEditedText) return;
+					if (finalized || safeText === lastEditedText) return;
 					if (!placeholderMsgId) {
 						// Don't create a placeholder for tiny initial chunks — wait for meaningful content
-						if (text.length < MIN_INITIAL_CHARS && !text.startsWith("🔧") && !text.startsWith("✅")) return;
+						if (safeText.length < MIN_INITIAL_CHARS && !safeText.startsWith("🔧") && !safeText.startsWith("✅")) return;
 						// Let the typing indicator show for at least a short period
 						const elapsed = Date.now() - handlerStartTime;
 						if (elapsed < FIRST_PLACEHOLDER_DELAY_MS) {
@@ -101,7 +108,7 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 						}
 						if (finalized) return;
 						try {
-							const msg = await ctx.reply(text, { reply_parameters: replyParams });
+							const msg = await ctx.reply(safeText, { reply_parameters: replyParams });
 							placeholderMsgId = msg.message_id;
 							// Stop typing once placeholder is visible — edits serve as the indicator now
 							stopTyping();
@@ -110,14 +117,14 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 						}
 					} else {
 						try {
-							await editSafe(getBot()!.api, chatId, placeholderMsgId, text);
+							await editSafe(getBot()!.api, chatId, placeholderMsgId, safeText);
 						} catch (err) {
-							// Silently ignore "message is not modified" — happens when text hasn't actually changed
-							if (isMessageNotModifiedError(err)) return;
+							// Silently ignore "message is not modified" or "too long" during streaming
+							if (isMessageNotModifiedError(err) || isMessageTooLongError(err)) return;
 							return;
 						}
 					}
-					lastEditedText = text;
+					lastEditedText = safeText;
 				})
 				.catch(() => {});
 		};
@@ -237,7 +244,8 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 							parts.push(`⬆${fmtTokens(usageInfo.inputTokens)} ⬇${fmtTokens(usageInfo.outputTokens)}`);
 							const totalTokens = usageInfo.inputTokens + usageInfo.outputTokens;
 							parts.push(`Σ${fmtTokens(totalTokens)}`);
-							if (config.usageMode === "full" && usageInfo.duration) parts.push(`${(usageInfo.duration / 1000).toFixed(1)}s`);
+							if (config.usageMode === "full" && usageInfo.duration)
+								parts.push(`${(usageInfo.duration / 1000).toFixed(1)}s`);
 							textWithMeta += `\n\n📊 ${parts.join(" · ")}`;
 						}
 						const formatted = toTelegramHTML(textWithMeta);
@@ -339,6 +347,15 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 							const isLast = index === totalChunks - 1;
 							// Pagination header for multi-chunk messages
 							const pageTag = totalChunks > 1 ? `📄 ${index + 1}/${totalChunks}\n` : "";
+							// Trim chunk if pageTag pushes it over the limit
+							let safeChunk = chunk;
+							if (pageTag.length + safeChunk.length > TELEGRAM_MAX_LENGTH) {
+								safeChunk = safeChunk.slice(0, TELEGRAM_MAX_LENGTH - pageTag.length - 4) + " ⋯";
+							}
+							let safeFallback = fallback;
+							if (pageTag.length + safeFallback.length > TELEGRAM_MAX_LENGTH) {
+								safeFallback = safeFallback.slice(0, TELEGRAM_MAX_LENGTH - pageTag.length - 4) + " ⋯";
+							}
 							const opts = {
 								parse_mode: "HTML" as const,
 								...(isFirst ? { reply_parameters: replyParams } : {}),
@@ -349,8 +366,8 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 								...(isLast && smartKb ? { reply_markup: smartKb } : {}),
 							};
 							const sent = await ctx
-								.reply(pageTag + chunk, opts)
-								.catch(() => ctx.reply(pageTag + fallback, fallbackOpts));
+								.reply(pageTag + safeChunk, opts)
+								.catch(() => ctx.reply(pageTag + safeFallback, fallbackOpts));
 							if (index === 0 && sent) firstSentMsgId = sent.message_id;
 						};
 						let sendSucceeded = false;
