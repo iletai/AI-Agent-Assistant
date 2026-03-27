@@ -1,13 +1,14 @@
-import { approveAll, defineTool, type CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
+import { approveAll, defineTool, type CopilotSession, type Tool } from "@github/copilot-sdk";
 import { readdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join, resolve, sep } from "path";
 import { z } from "zod";
 import { config, persistModel } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
-import { addMemory, getDb, removeMemory, searchMemories } from "../store/db.js";
-import { getCurrentSourceChannel } from "./orchestrator.js";
+import { getDb } from "../store/db.js";
+import { addMemory, removeMemory, searchMemories } from "../store/memory.js";
 import { createSkill, listSkills, removeSkill } from "./skills.js";
+import type { TeamInfo, ToolDeps, WorkerEvent, WorkerInfo } from "./types.js";
 
 function isTimeoutError(err: unknown): boolean {
 	const msg = err instanceof Error ? err.message : String(err);
@@ -40,42 +41,7 @@ const BLOCKED_WORKER_DIRS = [
 const MAX_CONCURRENT_WORKERS = 5;
 const MAX_CONCURRENT_TEAMS = 3;
 
-export interface WorkerInfo {
-	name: string;
-	session: CopilotSession;
-	workingDir: string;
-	status: "idle" | "running" | "error";
-	lastOutput?: string;
-	/** Timestamp (ms) when the worker started its current task. */
-	startedAt?: number;
-	/** Channel that created this worker — completions route back here. */
-	originChannel?: "telegram" | "tui";
-	/** Team this worker belongs to (if any). */
-	teamId?: string;
-}
-
-export type WorkerEvent =
-	| { type: "created"; name: string; workingDir: string }
-	| { type: "dispatched"; name: string }
-	| { type: "completed"; name: string }
-	| { type: "error"; name: string; error: string };
-
-export interface TeamInfo {
-	id: string;
-	taskDescription: string;
-	members: string[];
-	originChannel?: "telegram" | "tui";
-	completedMembers: Set<string>;
-	memberResults: Map<string, string>;
-}
-
-export interface ToolDeps {
-	client: CopilotClient;
-	workers: Map<string, WorkerInfo>;
-	teams: Map<string, TeamInfo>;
-	onWorkerComplete: (name: string, result: string) => void;
-	onWorkerEvent?: (event: WorkerEvent) => void;
-}
+export { type TeamInfo, type ToolDeps, type WorkerEvent, type WorkerInfo } from "./types.js";
 
 export function createTools(deps: ToolDeps): Tool<any>[] {
 	return [
@@ -126,7 +92,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					session,
 					workingDir: args.working_dir,
 					status: "idle",
-					originChannel: getCurrentSourceChannel(),
+					originChannel: deps.getCurrentSourceChannel(),
 				};
 				deps.workers.set(args.name, worker);
 				deps.onWorkerEvent?.({ type: "created", name: args.name, workingDir: args.working_dir });
@@ -296,6 +262,33 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 			},
 		}),
 
+		defineTool("kill_worker", {
+			description:
+				"Force-kill a stuck or unresponsive worker session by name. " +
+				"Use when a worker is hanging or no longer needed.",
+			parameters: z.object({
+				name: z.string().describe("Name of the worker to kill"),
+			}),
+			handler: async (args) => {
+				const worker = deps.workers.get(args.name);
+				if (!worker) return `No worker found with name '${args.name}'.`;
+				try {
+					worker.session.disconnect().catch(() => {});
+				} catch {
+					// Session may already be destroyed
+				}
+				deps.workers.delete(args.name);
+				try {
+					getDb()
+						.prepare(`DELETE FROM worker_sessions WHERE name = ?`)
+						.run(args.name);
+				} catch {
+					// DB cleanup is best-effort
+				}
+				return `Worker '${args.name}' force-killed.`;
+			},
+		}),
+
 		// ── Agent Team Tools ──────────────────────────────────────────
 
 		defineTool("create_agent_team", {
@@ -347,7 +340,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				}
 
 				const teamId = args.team_name;
-				const originChannel = getCurrentSourceChannel();
+				const originChannel = deps.getCurrentSourceChannel();
 
 				const { createTeam: dbCreateTeam, addTeamMember: dbAddTeamMember } = await import("../store/db.js");
 				dbCreateTeam(teamId, args.task_description, originChannel);
@@ -599,7 +592,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 						session,
 						workingDir: "(attached)",
 						status: "idle",
-						originChannel: getCurrentSourceChannel(),
+						originChannel: deps.getCurrentSourceChannel(),
 					};
 					deps.workers.set(args.name, worker);
 

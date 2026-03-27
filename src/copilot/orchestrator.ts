@@ -1,34 +1,25 @@
 import { approveAll, type CopilotClient, type CopilotSession, type MessageOptions } from "@github/copilot-sdk";
 import { config, DEFAULT_MODEL } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
-import {
-	completeTeam,
-	deleteState,
-	getMemorySummary,
-	getRecentConversation,
-	getState,
-	logConversation,
-	setState,
-	updateTeamMemberResult,
-} from "../store/db.js";
+import { deleteState, getState, setState } from "../store/db.js";
+import { getRecentConversation, logConversation } from "../store/conversation.js";
+import { getMemorySummary } from "../store/memory.js";
+import { completeTeam, updateTeamMemberResult } from "../store/team-store.js";
+import { formatAge, withTimeout } from "../utils.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
 import { getSkillDirectories } from "./skills.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
-import { createTools, type TeamInfo, type WorkerEvent, type WorkerInfo } from "./tools.js";
+import { createTools } from "./tools.js";
+import type { MessageCallback, MessageSource, TeamInfo, WorkerEvent, WorkerInfo } from "./types.js";
+
+export type { MessageCallback, MessageSource } from "./types.js";
 
 const MAX_RETRIES = 2;
 const RECONNECT_DELAYS_MS = [1_000, 5_000];
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
 const ORCHESTRATOR_SESSION_KEY = "orchestrator_session_id";
-
-export type MessageSource =
-	| { type: "telegram"; chatId: number; messageId: number }
-	| { type: "tui"; connectionId: string }
-	| { type: "background" };
-
-export type MessageCallback = (text: string, done: boolean, meta?: { assistantLogId?: number }) => void | Promise<void>;
 
 export type ToolEvent = {
 	type: "tool_start" | "tool_complete" | "tool_partial_result";
@@ -74,11 +65,14 @@ let copilotClient: CopilotClient | undefined;
 const workers = new Map<string, WorkerInfo>();
 const teams = new Map<string, TeamInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
+let workerReaperTimer: ReturnType<typeof setInterval> | undefined;
 
 // Persistent orchestrator session
 let orchestratorSession: CopilotSession | undefined;
 // Coalesces concurrent ensureOrchestratorSession calls
 let sessionCreatePromise: Promise<CopilotSession> | undefined;
+// Tracks when the orchestrator session was created for TTL enforcement
+let sessionCreatedAt: number | undefined;
 // Tracks in-flight context recovery injection so we don't race with real messages
 let recoveryInjectionPromise: Promise<void> | undefined;
 
@@ -130,6 +124,7 @@ function getSessionConfig() {
 					workerNotifyFn(event, channel);
 				}
 			},
+			getCurrentSourceChannel,
 		});
 		cachedToolsClientRef = copilotClient;
 	}
@@ -225,23 +220,29 @@ async function ensureClient(): Promise<CopilotClient> {
 }
 
 /** Start periodic health check that proactively reconnects the client. */
+let healthCheckRunning = false;
 function startHealthCheck(): void {
 	if (healthCheckTimer) return;
 	healthCheckTimer = setInterval(async () => {
 		if (!copilotClient) return;
+		if (healthCheckRunning) return;
+		healthCheckRunning = true;
 		try {
 			const state = copilotClient.getState();
 			if (state !== "connected") {
 				console.log(`[nzb] Health check: client state is '${state}', resetting…`);
 				const previousClient = copilotClient;
-				await ensureClient();
+				await withTimeout(ensureClient(), 15_000, "health check");
 				// Only invalidate session if the underlying client actually changed
 				if (copilotClient !== previousClient) {
 					orchestratorSession = undefined;
+					sessionCreatedAt = undefined;
 				}
 			}
 		} catch (err) {
 			console.error(`[nzb] Health check error:`, err instanceof Error ? err.message : err);
+		} finally {
+			healthCheckRunning = false;
 		}
 	}, HEALTH_CHECK_INTERVAL_MS);
 }
@@ -254,16 +255,69 @@ export function stopHealthCheck(): void {
 	}
 }
 
+/** Periodically kills workers that have exceeded 2× their configured timeout. */
+function startWorkerReaper(): void {
+	if (workerReaperTimer) return;
+	workerReaperTimer = setInterval(() => {
+		const maxAge = config.workerTimeoutMs * 2;
+		const now = Date.now();
+		for (const [name, worker] of workers) {
+			if (worker.startedAt && now - worker.startedAt > maxAge) {
+				console.log(
+					`[nzb] Reaping stuck worker '${name}' (age: ${formatAge(worker.startedAt)})`,
+				);
+				try {
+					worker.session.disconnect().catch(() => {});
+				} catch {
+					// Session may already be destroyed
+				}
+				workers.delete(name);
+				feedBackgroundResult(
+					name,
+					`⚠ Worker '${name}' was automatically killed after exceeding timeout.`,
+				);
+			}
+		}
+	}, 5 * 60 * 1000);
+	workerReaperTimer.unref();
+}
+
+const SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours
+
 /** Create or resume the persistent orchestrator session. */
 async function ensureOrchestratorSession(): Promise<CopilotSession> {
-	if (orchestratorSession) return orchestratorSession;
+	if (orchestratorSession) {
+		// Validate session is still usable — check client connectivity
+		try {
+			const clientState = copilotClient?.getState?.();
+			if (clientState && clientState !== "connected") {
+				console.log(`[nzb] Session stale (client state: ${clientState}), recreating…`);
+				orchestratorSession = undefined;
+				sessionCreatedAt = undefined;
+			}
+		} catch {
+			console.log("[nzb] Session validation failed, recreating…");
+			orchestratorSession = undefined;
+			sessionCreatedAt = undefined;
+		}
+
+		// Enforce session TTL
+		if (sessionCreatedAt && Date.now() - sessionCreatedAt > SESSION_MAX_AGE_MS) {
+			console.log("[nzb] Session TTL expired, recreating…");
+			orchestratorSession = undefined;
+			sessionCreatedAt = undefined;
+		}
+
+		if (orchestratorSession) return orchestratorSession;
+	}
 	// Coalesce concurrent callers — wait for an in-flight creation
 	if (sessionCreatePromise) return sessionCreatePromise;
 
-	sessionCreatePromise = createOrResumeSession();
+	sessionCreatePromise = withTimeout(createOrResumeSession(), 30_000, "session create/resume");
 	try {
 		const session = await sessionCreatePromise;
 		orchestratorSession = session;
+		sessionCreatedAt = Date.now();
 		return session;
 	} finally {
 		sessionCreatePromise = undefined;
@@ -339,7 +393,7 @@ async function createOrResumeSession(): Promise<CopilotSession> {
 	// Recover conversation context if available (session was lost, not first run)
 	// Runs concurrently but is awaited before any real message is sent on the session
 	const recentHistory = getRecentConversation(10);
-	if (recentHistory) {
+	if (!recoveryInjectionPromise && recentHistory) {
 		console.log(`[nzb] Injecting recent conversation context into new session`);
 		recoveryInjectionPromise = session
 			.sendAndWait(
@@ -391,6 +445,7 @@ export async function initOrchestrator(client: CopilotClient): Promise<void> {
 	console.log(`[nzb] Skill directories: ${skillDirectories.join(", ") || "(none)"}`);
 	console.log(`[nzb] Persistent session mode — conversation history maintained by SDK`);
 	startHealthCheck();
+	startWorkerReaper();
 
 	// Eagerly create/resume the orchestrator session
 	try {
@@ -415,8 +470,10 @@ async function executeOnSession(
 
 	// Wait for any in-flight context recovery injection to finish before sending
 	if (recoveryInjectionPromise) {
-		console.log(`[nzb] Waiting for context recovery injection to complete before sending…`);
-		await recoveryInjectionPromise;
+		console.log("[nzb] Waiting for context recovery…");
+		await withTimeout(recoveryInjectionPromise, 25_000, "recovery injection wait").catch(() => {
+			console.log("[nzb] Recovery injection wait timed out, proceeding anyway");
+		});
 	}
 
 	currentCallback = callback;
@@ -424,47 +481,71 @@ async function executeOnSession(
 	let accumulated = "";
 	let toolCallExecuted = false;
 	const unsubToolStart = session.on("tool.execution_start", (event: any) => {
-		const toolName = event?.data?.toolName || event?.data?.name || "tool";
-		const args = event?.data?.arguments;
-		const detail =
-			args?.description ||
-			args?.command?.slice(0, 80) ||
-			args?.intent ||
-			args?.pattern ||
-			args?.prompt?.slice(0, 80) ||
-			undefined;
-		onToolEvent?.({ type: "tool_start", toolName, detail });
+		try {
+			const toolName = event?.data?.toolName || event?.data?.name || "tool";
+			const args = event?.data?.arguments;
+			const detail =
+				args?.description ||
+				args?.command?.slice(0, 80) ||
+				args?.intent ||
+				args?.pattern ||
+				args?.prompt?.slice(0, 80) ||
+				undefined;
+			onToolEvent?.({ type: "tool_start", toolName, detail });
+		} catch (err) {
+			console.error("[nzb] Error in tool.execution_start listener:", err instanceof Error ? err.message : err);
+		}
 	});
 	const unsubToolDone = session.on("tool.execution_complete", (event: any) => {
-		toolCallExecuted = true;
-		const toolName = event?.data?.toolName || event?.data?.name || "tool";
-		onToolEvent?.({ type: "tool_complete", toolName });
+		try {
+			toolCallExecuted = true;
+			const toolName = event?.data?.toolName || event?.data?.name || "tool";
+			onToolEvent?.({ type: "tool_complete", toolName });
+		} catch (err) {
+			console.error("[nzb] Error in tool.execution_complete listener:", err instanceof Error ? err.message : err);
+		}
 	});
 	const unsubDelta = session.on("assistant.message_delta", (event: any) => {
-		// After a tool call completes, ensure a line break separates the text blocks
-		// so they don't visually run together in the TUI.
-		if (toolCallExecuted && accumulated.length > 0 && !accumulated.endsWith("\n")) {
-			accumulated += "\n";
+		try {
+			// After a tool call completes, ensure a line break separates the text blocks
+			// so they don't visually run together in the TUI.
+			if (toolCallExecuted && accumulated.length > 0 && !accumulated.endsWith("\n")) {
+				accumulated += "\n";
+			}
+			toolCallExecuted = false;
+			accumulated += event.data.deltaContent;
+			callback(accumulated, false);
+		} catch (err) {
+			console.error("[nzb] Error in message_delta listener:", err instanceof Error ? err.message : err);
 		}
-		toolCallExecuted = false;
-		accumulated += event.data.deltaContent;
-		callback(accumulated, false);
 	});
 	const unsubError = session.on("session.error", (event: any) => {
-		const errMsg = event?.data?.message || event?.data?.error || "Unknown session error";
-		console.error(`[nzb] Session error event: ${errMsg}`);
+		try {
+			const errMsg = event?.data?.message || event?.data?.error || "Unknown session error";
+			console.error(`[nzb] Session error event: ${errMsg}`);
+		} catch (err) {
+			console.error("[nzb] Error in session.error listener:", err instanceof Error ? err.message : err);
+		}
 	});
 	const unsubPartialResult = session.on("tool.execution_partial_result", (event: any) => {
-		const toolName = event?.data?.toolName || event?.data?.name || "tool";
-		const partialOutput = event?.data?.partialOutput || "";
-		onToolEvent?.({ type: "tool_partial_result", toolName, detail: partialOutput });
+		try {
+			const toolName = event?.data?.toolName || event?.data?.name || "tool";
+			const partialOutput = event?.data?.partialOutput || "";
+			onToolEvent?.({ type: "tool_partial_result", toolName, detail: partialOutput });
+		} catch (err) {
+			console.error("[nzb] Error in tool.execution_partial_result listener:", err instanceof Error ? err.message : err);
+		}
 	});
 	const unsubUsage = session.on("assistant.usage", (event: any) => {
-		const inputTokens = event?.data?.inputTokens || 0;
-		const outputTokens = event?.data?.outputTokens || 0;
-		const model = event?.data?.model || undefined;
-		const duration = event?.data?.duration || undefined;
-		onUsage?.({ inputTokens, outputTokens, model, duration });
+		try {
+			const inputTokens = event?.data?.inputTokens || 0;
+			const outputTokens = event?.data?.outputTokens || 0;
+			const model = event?.data?.model || undefined;
+			const duration = event?.data?.duration || undefined;
+			onUsage?.({ inputTokens, outputTokens, model, duration });
+		} catch (err) {
+			console.error("[nzb] Error in assistant.usage listener:", err instanceof Error ? err.message : err);
+		}
 	});
 
 	try {
@@ -486,6 +567,7 @@ async function executeOnSession(
 		if (/not supported for vision/i.test(msg)) {
 			console.log(`[nzb] Model '${config.copilotModel}' does not support vision — destroying tainted session`);
 			orchestratorSession = undefined;
+			sessionCreatedAt = undefined;
 			deleteState(ORCHESTRATOR_SESSION_KEY);
 			throw err;
 		}
@@ -500,6 +582,7 @@ async function executeOnSession(
 		if (/closed|destroy|disposed|invalid|expired|not found/i.test(msg)) {
 			console.log(`[nzb] Session appears dead, will recreate: ${msg}`);
 			orchestratorSession = undefined;
+			sessionCreatedAt = undefined;
 			deleteState(ORCHESTRATOR_SESSION_KEY);
 		}
 		throw err;
@@ -524,25 +607,32 @@ async function processQueue(): Promise<void> {
 	}
 	processing = true;
 
-	while (messageQueue.length > 0) {
-		const item = messageQueue.shift()!;
-		currentSourceChannel = item.sourceChannel;
-		try {
-			const result = await executeOnSession(
-				item.prompt,
-				item.callback,
-				item.onToolEvent,
-				item.onUsage,
-				item.attachments,
-			);
-			item.resolve(result);
-		} catch (err) {
-			item.reject(err);
+	try {
+		while (messageQueue.length > 0) {
+			const item = messageQueue.shift()!;
+			currentSourceChannel = item.sourceChannel;
+			try {
+				const result = await executeOnSession(
+					item.prompt,
+					item.callback,
+					item.onToolEvent,
+					item.onUsage,
+					item.attachments,
+				);
+				item.resolve(result);
+			} catch (err) {
+				item.reject(err);
+			}
+			currentSourceChannel = undefined;
 		}
-		currentSourceChannel = undefined;
+	} finally {
+		processing = false;
 	}
 
-	processing = false;
+	// Re-check for messages that arrived during the last executeOnSession call
+	if (messageQueue.length > 0) {
+		void processQueue();
+	}
 }
 
 function isRecoverableError(err: unknown): boolean {
@@ -702,10 +792,10 @@ export async function sendToOrchestrator(
 				return;
 			}
 		}
-	})();
+	})().catch((err) => {
+		console.error(`[nzb] Unhandled error in sendToOrchestrator: ${err instanceof Error ? err.message : String(err)}`);
+	});
 }
-
-/** Cancel the in-flight message and drain the queue. */
 export async function cancelCurrentMessage(): Promise<boolean> {
 	// Drain any queued messages
 	const drained = messageQueue.length;
@@ -760,6 +850,7 @@ export async function resetSession(): Promise<void> {
 			await orchestratorSession.disconnect();
 		} catch {}
 		orchestratorSession = undefined;
+		sessionCreatedAt = undefined;
 	}
 
 	// Clear persisted session ID so a fresh session is created
