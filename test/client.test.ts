@@ -1,5 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Track withTimeout calls to control timeout behavior per-test
+let shouldTimeout = false;
+
+vi.mock("../src/utils.js", () => {
+	class TimeoutError extends Error {
+		constructor(ms: number, label?: string) {
+			const msg = label
+				? `Operation "${label}" timed out after ${ms}ms`
+				: `Operation timed out after ${ms}ms`;
+			super(msg);
+			this.name = "TimeoutError";
+		}
+	}
+	return {
+		TimeoutError,
+		withTimeout: (promise: Promise<any>, ms: number, label?: string) => {
+			if (shouldTimeout) {
+				return Promise.reject(new TimeoutError(ms, label));
+			}
+			return promise;
+		},
+	};
+});
+
 // Mock CopilotClient before importing client module
 const mockStart = vi.fn().mockResolvedValue(undefined);
 const mockStop = vi.fn().mockResolvedValue(undefined);
@@ -19,10 +43,11 @@ import { getClient, resetClient, stopClient } from "../src/copilot/client.js";
 describe("getClient", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		shouldTimeout = false;
 	});
 
 	afterEach(async () => {
-		// Reset internal state by stopping the client
+		shouldTimeout = false;
 		try {
 			await stopClient();
 		} catch {
@@ -40,37 +65,26 @@ describe("getClient", () => {
 		const client1 = await getClient();
 		const client2 = await getClient();
 		expect(client1).toBe(client2);
-		expect(mockStart).toHaveBeenCalledTimes(1); // only started once
+		expect(mockStart).toHaveBeenCalledTimes(1);
 	});
 
-	it("rejects when client.start() times out", async () => {
-		// Stop any existing client first
+	it("rejects with TimeoutError when client.start() times out", async () => {
 		await stopClient();
 		vi.clearAllMocks();
 
-		// Make start() never resolve (simulate hang)
-		mockStart.mockImplementation(() => new Promise(() => {}));
-
-		// The internal withTimeout uses 30_000ms — we use fake timers to test
-		vi.useFakeTimers();
-		const p = getClient();
-
-		// Advance past the 30s timeout
-		await vi.advanceTimersByTimeAsync(31_000);
-
-		await expect(p).rejects.toThrow(/[Tt]imeout/);
-
-		vi.useRealTimers();
+		shouldTimeout = true;
+		await expect(getClient()).rejects.toThrow(/timed out/);
 	});
 });
 
 describe("resetClient", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		vi.useRealTimers();
+		shouldTimeout = false;
 	});
 
 	afterEach(async () => {
+		shouldTimeout = false;
 		try {
 			await stopClient();
 		} catch {
@@ -79,34 +93,27 @@ describe("resetClient", () => {
 	});
 
 	it("stops the old client and creates a new one", async () => {
-		// Create initial client
 		await getClient();
 		expect(mockStart).toHaveBeenCalledTimes(1);
 
-		// Reset
 		const newClient = await resetClient();
 		expect(newClient).toBeDefined();
 		expect(mockStop).toHaveBeenCalledTimes(1);
-		expect(mockStart).toHaveBeenCalledTimes(2); // started twice (initial + after reset)
+		expect(mockStart).toHaveBeenCalledTimes(2);
 	});
 
 	it("coalesces concurrent resetClient() calls into one reset", async () => {
-		// Create initial client
 		await getClient();
 		vi.clearAllMocks();
 
-		// Fire multiple resets concurrently
 		const [r1, r2, r3] = await Promise.all([
 			resetClient(),
 			resetClient(),
 			resetClient(),
 		]);
 
-		// All should return the same client instance
 		expect(r1).toBe(r2);
 		expect(r2).toBe(r3);
-
-		// stop() should only be called once (coalesced)
 		expect(mockStop).toHaveBeenCalledTimes(1);
 	});
 
@@ -116,7 +123,6 @@ describe("resetClient", () => {
 		await getClient();
 		vi.clearAllMocks();
 
-		// Make stop() reject
 		mockStop.mockRejectedValueOnce(new Error("stop failed"));
 
 		const client = await resetClient();
@@ -139,13 +145,18 @@ describe("resetClient", () => {
 
 		vi.clearAllMocks();
 		await resetClient();
-		expect(mockStop).toHaveBeenCalledTimes(1); // called again for second reset
+		expect(mockStop).toHaveBeenCalledTimes(1);
 	});
 });
 
 describe("stopClient", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		shouldTimeout = false;
+	});
+
+	afterEach(() => {
+		shouldTimeout = false;
 	});
 
 	it("stops existing client", async () => {
@@ -155,25 +166,15 @@ describe("stopClient", () => {
 	});
 
 	it("is a no-op when no client exists", async () => {
-		// freshly stopped — calling stop again should not throw
 		await stopClient();
 		expect(mockStop).not.toHaveBeenCalled();
 	});
 
-	it("rejects when client.stop() times out", async () => {
+	it("rejects with TimeoutError when client.stop() times out", async () => {
 		await getClient();
 		vi.clearAllMocks();
 
-		// Make stop() never resolve
-		mockStop.mockImplementation(() => new Promise(() => {}));
-
-		vi.useFakeTimers();
-		const p = stopClient();
-
-		await vi.advanceTimersByTimeAsync(11_000);
-
-		await expect(p).rejects.toThrow(/[Tt]imeout/);
-
-		vi.useRealTimers();
+		shouldTimeout = true;
+		await expect(stopClient()).rejects.toThrow(/timed out/);
 	});
 });

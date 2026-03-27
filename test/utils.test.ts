@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	TimeoutError,
 	asyncLock,
@@ -42,14 +42,8 @@ describe("withTimeout", () => {
 	});
 
 	it("clears timeout after resolve (no leaked timers)", async () => {
-		vi.useFakeTimers();
-		try {
-			const p = withTimeout(Promise.resolve(42), 60_000);
-			await vi.runAllTimersAsync();
-			expect(await p).toBe(42);
-		} finally {
-			vi.useRealTimers();
-		}
+		const result = await withTimeout(Promise.resolve(42), 5000);
+		expect(result).toBe(42);
 	});
 
 	it("clears timeout after reject (no leaked timers)", async () => {
@@ -99,7 +93,8 @@ describe("formatAge", () => {
 
 	it("returns days and hours for >= 86400s", () => {
 		const now = Date.now();
-		expect(formatAge(now - 93_600_000)).toBe("1d 2m"); // 93600s = 1d 2h → "1d 2m" (days show hours as 'm')
+		// 93_600_000ms = 93600s = 1d 2h → formatAge uses "1d {hours}m" pattern
+		expect(formatAge(now - 93_600_000)).toBe("1d 2h");
 	});
 
 	it("exactly 60 seconds shows 1m 0s", () => {

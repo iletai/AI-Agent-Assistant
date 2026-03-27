@@ -41,10 +41,20 @@ beforeEach(async () => {
 		ensureNZBHome: vi.fn(),
 	}));
 	vi.doMock("../src/store/db.js", () => ({
+		getDb: vi.fn(() => null),
 		getState: vi.fn(() => null),
 		setState: vi.fn(),
 		deleteState: vi.fn(),
 		getMemorySummary: vi.fn(() => null),
+		getRecentConversation: vi.fn(() => null),
+		logConversation: vi.fn(() => 1),
+		logMessage: vi.fn(),
+		setConversationTelegramMsgId: vi.fn(),
+	}));
+	vi.doMock("../src/store/memory.js", () => ({
+		getMemorySummary: vi.fn(() => null),
+	}));
+	vi.doMock("../src/store/conversation.js", () => ({
 		getRecentConversation: vi.fn(() => null),
 		logConversation: vi.fn(() => 1),
 		logMessage: vi.fn(),
