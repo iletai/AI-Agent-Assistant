@@ -1,8 +1,11 @@
 import { autoRetry } from "@grammyjs/auto-retry";
 import { sequentialize } from "@grammyjs/runner";
 import { apiThrottler } from "@grammyjs/transformer-throttler";
+import { realpathSync } from "fs";
 import { Bot, Keyboard } from "grammy";
 import { Agent as HttpsAgent } from "https";
+import { tmpdir } from "os";
+import { resolve as pathResolve } from "path";
 import { config } from "../config.js";
 import { getPersistedUpdateOffset, isUpdateDuplicate, persistUpdateOffset } from "./dedup.js";
 import { registerCallbackHandlers } from "./handlers/callbacks.js";
@@ -20,6 +23,10 @@ let bot: Bot | undefined;
 /** Abort controller for graceful fetch abort on shutdown — prevents 30s getUpdates hang and 409 conflicts. */
 let fetchAbortController: AbortController | undefined;
 const startedAt = Date.now();
+
+const INITIAL_POLL_RETRY_DELAY = 5000;
+const MAX_POLL_RETRY_DELAY = 300_000; // 5 minutes
+let pollRetryDelay = INITIAL_POLL_RETRY_DELAY;
 
 // Direct-connection HTTPS agent for Telegram API requests.
 // This bypasses corporate proxy (HTTP_PROXY/HTTPS_PROXY env vars) without
@@ -192,6 +199,7 @@ export async function startBot(): Promise<void> {
 			...(savedOffset ? { offset: savedOffset + 1 } : {}),
 			onStart: () => {
 				console.log("[nzb] Telegram bot connected");
+				pollRetryDelay = INITIAL_POLL_RETRY_DELAY;
 				void logInfo(`🚀 NZB v${process.env.npm_package_version || "?"} started (model: ${config.copilotModel})`);
 			},
 		})
@@ -203,12 +211,19 @@ export async function startBot(): Promise<void> {
 				return; // Unrecoverable — don't retry
 			}
 			if (err?.error_code === 409) {
-				console.error("[nzb] Warning: Telegram polling conflict (409). Restarting polling in 5 seconds...");
+				console.error(
+					`[nzb] Warning: Telegram polling conflict (409). Restarting polling in ${pollRetryDelay / 1000}s...`,
+				);
 			} else {
-				console.error("[nzb] Error: Telegram polling stopped:", err?.message || err, "— restarting in 5 seconds...");
+				console.error(
+					"[nzb] Error: Telegram polling stopped:",
+					err?.message || err,
+					`— restarting in ${pollRetryDelay / 1000}s...`,
+				);
 			}
-			// Auto-restart polling after a delay
-			await new Promise((r) => setTimeout(r, 5000));
+			// Auto-restart polling with exponential backoff
+			await new Promise((r) => setTimeout(r, pollRetryDelay));
+			pollRetryDelay = Math.min(pollRetryDelay * 2, MAX_POLL_RETRY_DELAY);
 			if (bot) {
 				console.log("[nzb] Re-starting Telegram polling...");
 				startBot().catch((e) => console.error("[nzb] Failed to re-start Telegram polling:", e));
@@ -237,17 +252,73 @@ export async function sendWorkerNotification(message: string): Promise<void> {
 	try {
 		const { truncateForTelegram } = await import("./formatter.js");
 		await bot.api.sendMessage(config.authorizedUserId, truncateForTelegram(message));
-	} catch {
-		// best-effort — don't crash if notification fails
+	} catch (err: unknown) {
+		console.error("[nzb] Worker notification failed:", err instanceof Error ? err.message : err);
 	}
 }
 
-/** Send a photo to the authorized user. Accepts a file path or URL. */
+/** Check if a URL points to an internal/private network address. */
+function isInternalUrl(urlStr: string): boolean {
+	try {
+		const url = new URL(urlStr);
+		const hostname = url.hostname.replace(/^\[|\]$/g, ""); // Strip IPv6 brackets
+		if (hostname === "localhost" || hostname === "0.0.0.0" || hostname === "::1") return true;
+		if (hostname.startsWith("127.")) return true; // Entire 127.0.0.0/8 loopback range
+		if (hostname.startsWith("10.")) return true;
+		if (
+			hostname.startsWith("172.") &&
+			parseInt(hostname.split(".")[1]) >= 16 &&
+			parseInt(hostname.split(".")[1]) <= 31
+		)
+			return true;
+		if (hostname.startsWith("192.168.")) return true;
+		if (hostname.startsWith("169.254.")) return true; // Entire 169.254.0.0/16 link-local range
+		if (hostname.endsWith(".internal") || hostname.endsWith(".local")) return true;
+		// IPv6 private/link-local: fe80::/10, fc00::/7 (fd00::/8), IPv4-mapped ::ffff:x
+		if (/^(fe[89ab][0-9a-f]|f[cd][0-9a-f]{2}):/i.test(hostname)) return true;
+		if (hostname.startsWith("::ffff:")) return true;
+		return false;
+	} catch {
+		// Expected: invalid URL treated as internal for safety
+		return true;
+	}
+}
+
+/** Allowlisted directories for local file photo access. */
+const PHOTO_ALLOWED_DIRS = [tmpdir(), "/tmp"];
+
+/** Validate a local file path is within allowed directories. */
+function isAllowedFilePath(filePath: string): boolean {
+	try {
+		const resolved = realpathSync(pathResolve(filePath));
+		return PHOTO_ALLOWED_DIRS.some((dir) => resolved.startsWith(dir));
+	} catch {
+		// Expected: file may not exist or path may be inaccessible
+		return false;
+	}
+}
+
+/** Send a photo to the authorized user. Accepts a file path or HTTPS URL. */
 export async function sendPhoto(photo: string, caption?: string): Promise<void> {
 	if (!bot || config.authorizedUserId === undefined) return;
-	try {
+
+	let input: string | InstanceType<typeof import("grammy").InputFile>;
+	if (photo.startsWith("https://")) {
+		if (isInternalUrl(photo)) {
+			throw new Error("URL points to an internal/private network address");
+		}
+		input = photo;
+	} else if (photo.startsWith("http://")) {
+		throw new Error("Only HTTPS URLs are allowed for photos");
+	} else {
+		if (!isAllowedFilePath(photo)) {
+			throw new Error("File path is not within allowed directories");
+		}
 		const { InputFile } = await import("grammy");
-		const input = photo.startsWith("http") ? photo : new InputFile(photo);
+		input = new InputFile(photo);
+	}
+
+	try {
 		await bot.api.sendPhoto(config.authorizedUserId, input, {
 			caption,
 		});

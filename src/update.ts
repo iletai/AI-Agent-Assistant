@@ -12,6 +12,7 @@ function getPackageJson(): { name: string; version: string } {
 		const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 		return { name: pkg.name || PKG_NAME, version: pkg.version || "0.0.0" };
 	} catch {
+		// Expected: package.json may not be found in dev/bundled environments
 		return { name: PKG_NAME, version: "0.0.0" };
 	}
 }
@@ -37,6 +38,7 @@ export async function getLatestVersion(): Promise<string | null> {
 		const result = await execAsync(`npm view ${name} version`, 10_000);
 		return result || null;
 	} catch {
+		// Expected: npm registry may be unreachable
 		return null;
 	}
 }

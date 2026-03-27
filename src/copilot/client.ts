@@ -1,4 +1,5 @@
 import { CopilotClient } from "@github/copilot-sdk";
+import { withTimeout } from "../utils.js";
 
 let client: CopilotClient | undefined;
 
@@ -10,7 +11,7 @@ export async function getClient(): Promise<CopilotClient> {
 		client = new CopilotClient({
 			autoStart: true,
 		});
-		await client.start();
+		await withTimeout(client.start(), 30_000, "client.start()");
 	}
 	return client;
 }
@@ -20,27 +21,27 @@ export async function resetClient(): Promise<CopilotClient> {
 	if (pendingResetPromise) return pendingResetPromise;
 
 	pendingResetPromise = (async () => {
-		if (client) {
-			try {
-				await client.stop();
-			} catch {
-				/* best-effort */
+		try {
+			if (client) {
+				try {
+					await withTimeout(client.stop(), 10_000, "client.stop()");
+				} catch (err) {
+					console.error("[nzb] Error stopping client during reset:", err);
+				}
+				client = undefined;
 			}
-			client = undefined;
+			return await getClient();
+		} finally {
+			pendingResetPromise = undefined;
 		}
-		return getClient();
 	})();
 
-	try {
-		return await pendingResetPromise;
-	} finally {
-		pendingResetPromise = undefined;
-	}
+	return pendingResetPromise;
 }
 
 export async function stopClient(): Promise<void> {
 	if (client) {
-		await client.stop();
+		await withTimeout(client.stop(), 10_000, "client.stop()");
 		client = undefined;
 	}
 }

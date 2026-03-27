@@ -4,6 +4,19 @@ import { type Attachment, sendToOrchestrator } from "../../copilot/orchestrator.
 import { logInfo } from "../log-channel.js";
 import { scheduleTempCleanup, sendFormattedReply } from "./helpers.js";
 
+const MEDIA_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/** Fetch with an AbortController timeout. Throws AbortError on timeout. */
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), MEDIA_DOWNLOAD_TIMEOUT_MS);
+	try {
+		return await fetch(url, { ...init, signal: controller.signal });
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 /** Register photo, document, and voice message handlers on the bot. */
 export function registerMediaHandlers(bot: Bot): void {
 	// Handle photo messages — download and pass to AI
@@ -27,7 +40,18 @@ export function registerMediaHandlers(bot: Bot): void {
 			}
 			const url = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
 
-			const response = await fetch(url);
+			let response: Response;
+			try {
+				response = await fetchWithTimeout(url);
+			} catch (err) {
+				if (err instanceof Error && err.name === "AbortError") {
+					await ctx.reply("⏱ Media download timed out. Please try again.", {
+						reply_parameters: { message_id: userMessageId },
+					});
+					return;
+				}
+				throw err;
+			}
 			const buffer = Buffer.from(await response.arrayBuffer());
 			const base64Data = buffer.toString("base64");
 			const ext = filePath.split(".").pop() || "jpg";
@@ -95,7 +119,18 @@ export function registerMediaHandlers(bot: Bot): void {
 			const tmpDir = mkdtempSync(join(tmpdir(), "nzb-doc-"));
 			const localPath = join(tmpDir, doc.file_name || "file");
 
-			const response = await fetch(url);
+			let response: Response;
+			try {
+				response = await fetchWithTimeout(url);
+			} catch (err) {
+				if (err instanceof Error && err.name === "AbortError") {
+					await ctx.reply("⏱ Media download timed out. Please try again.", {
+						reply_parameters: { message_id: userMessageId },
+					});
+					return;
+				}
+				throw err;
+			}
 			const buffer = Buffer.from(await response.arrayBuffer());
 			writeFileSync(localPath, buffer);
 			scheduleTempCleanup(tmpDir);
@@ -162,7 +197,18 @@ export function registerMediaHandlers(bot: Bot): void {
 			const ext = filePath.split(".").pop() || "oga";
 			const localPath = join(tmpDir, `voice.${ext}`);
 
-			const response = await fetch(url);
+			let response: Response;
+			try {
+				response = await fetchWithTimeout(url);
+			} catch (err) {
+				if (err instanceof Error && err.name === "AbortError") {
+					await ctx.reply("⏱ Media download timed out. Please try again.", {
+						reply_parameters: { message_id: userMessageId },
+					});
+					return;
+				}
+				throw err;
+			}
 			const buffer = Buffer.from(await response.arrayBuffer());
 			writeFileSync(localPath, buffer);
 			scheduleTempCleanup(tmpDir);
@@ -175,7 +221,7 @@ export function registerMediaHandlers(bot: Bot): void {
 					formData.append("file", new Blob([buffer], { type: "audio/ogg" }), `voice.${ext}`);
 					formData.append("model", "whisper-1");
 
-					const whisperResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+					const whisperResp = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
 						method: "POST",
 						headers: { Authorization: `Bearer ${config.openaiApiKey}` },
 						body: formData,

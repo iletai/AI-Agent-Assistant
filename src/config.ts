@@ -49,6 +49,13 @@ const parsedLogChannelId = raw.LOG_CHANNEL_ID ? raw.LOG_CHANNEL_ID.trim() : unde
 
 export const DEFAULT_MODEL = "claude-sonnet-4.6";
 
+function validateEnum<T extends string>(value: string | undefined, validValues: T[], defaultValue: T, name: string): T {
+	if (!value) return defaultValue;
+	if (validValues.includes(value as T)) return value as T;
+	console.log(`[nzb] Invalid ${name} value "${value}", using default "${defaultValue}"`);
+	return defaultValue;
+}
+
 let _copilotModel = raw.COPILOT_MODEL || DEFAULT_MODEL;
 
 export const config = {
@@ -77,15 +84,15 @@ export const config = {
 		process.env.SHOW_REASONING = value ? "true" : "false";
 	},
 	/** Usage display mode: off | tokens | full */
-	usageMode: (process.env.USAGE_MODE || "off") as "off" | "tokens" | "full",
+	usageMode: validateEnum(process.env.USAGE_MODE, ["off", "tokens", "full"] as const, "off", "USAGE_MODE"),
 	/** Verbose mode: when on, instructs the AI to be more detailed */
 	verboseMode: process.env.VERBOSE_MODE === "true",
 	/** Thinking level: off | low | medium | high */
-	thinkingLevel: (process.env.THINKING_LEVEL || "off") as "off" | "low" | "medium" | "high",
+	thinkingLevel: validateEnum(process.env.THINKING_LEVEL, ["off", "low", "medium", "high"] as const, "off", "THINKING_LEVEL"),
 	/** Group chat: when true, bot only responds when mentioned in groups */
 	groupMentionOnly: process.env.GROUP_MENTION_ONLY !== "false",
 	/** Reasoning effort: low | medium | high */
-	reasoningEffort: (process.env.REASONING_EFFORT || "medium") as "low" | "medium" | "high",
+	reasoningEffort: validateEnum(process.env.REASONING_EFFORT, ["low", "medium", "high"] as const, "medium", "REASONING_EFFORT"),
 };
 
 /** Persist an env variable to ~/.nzb/.env */
@@ -105,6 +112,7 @@ export function persistEnvVar(key: string, value: string): void {
 		if (!found) updated.push(`${key}=${value}`);
 		writeFileSync(ENV_PATH, updated.join("\n"));
 	} catch {
+		// Expected: .env file may not exist yet on first run
 		writeFileSync(ENV_PATH, `${key}=${value}\n`);
 	}
 }

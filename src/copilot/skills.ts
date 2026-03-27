@@ -52,7 +52,8 @@ export function listSkills(): SkillInfo[] {
 		let entries: string[];
 		try {
 			entries = readdirSync(dir);
-		} catch {
+		} catch (err: unknown) {
+			console.error("[nzb] Failed to read skill directory", dir + ":", err instanceof Error ? err.message : err);
 			continue;
 		}
 
@@ -71,7 +72,8 @@ export function listSkills(): SkillInfo[] {
 					directory: skillDir,
 					source,
 				});
-			} catch {
+			} catch (err: unknown) {
+				console.error("[nzb] Failed to parse SKILL.md for", entry + ":", err instanceof Error ? err.message : err);
 				skills.push({
 					slug: entry,
 					name: entry,

@@ -69,6 +69,19 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 		};
 		await startTyping();
 
+		// Safety timeout — force-stop typing if orchestrator hangs
+		const MAX_TYPING_MS = 120_000; // 2 minutes
+		const typingTimeout = setTimeout(() => {
+			if (!typingStopped) {
+				console.log("[nzb] Typing indicator timeout, force stopping");
+				stopTyping();
+			}
+		}, MAX_TYPING_MS);
+		const stopTypingAndClearTimeout = () => {
+			stopTyping();
+			clearTimeout(typingTimeout);
+		};
+
 		// Progressive streaming state — all Telegram API calls are serialized through editChain
 		// to prevent duplicate placeholder messages and race conditions
 		let placeholderMsgId: number | undefined;
@@ -113,7 +126,7 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 							const msg = await ctx.reply(safeText, { reply_parameters: replyParams });
 							placeholderMsgId = msg.message_id;
 							// Stop typing once placeholder is visible — edits serve as the indicator now
-							stopTyping();
+							stopTypingAndClearTimeout();
 						} catch {
 							return;
 						}
@@ -129,7 +142,9 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 					}
 					lastEditedText = safeText;
 				})
-				.catch(() => {});
+				.catch((err: unknown) => {
+					console.error("[nzb] Edit chain error:", err instanceof Error ? err.message : err);
+				});
 		};
 
 		const onToolEvent: ToolEventCallback = (event) => {
@@ -205,13 +220,14 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 			}
 		}
 
-		sendToOrchestrator(
-			userPrompt,
-			{ type: "telegram", chatId, messageId: userMessageId },
-			(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
-				if (done) {
-					finalized = true;
-					stopTyping();
+		try {
+			sendToOrchestrator(
+				userPrompt,
+				{ type: "telegram", chatId, messageId: userMessageId },
+				(text: string, done: boolean, meta?: { assistantLogId?: number }) => {
+					if (done) {
+						finalized = true;
+						stopTypingAndClearTimeout();
 					const assistantLogId = meta?.assistantLogId;
 					const elapsed = ((Date.now() - handlerStartTime) / 1000).toFixed(1);
 					void logInfo(`✅ Response done (${elapsed}s, ${toolHistory.length} tools, ${text.length} chars)`);
@@ -441,9 +457,25 @@ export function registerMessageHandler(bot: Bot, getBot: () => Bot | undefined):
 						enqueueEdit(statusLine + preview);
 					}
 				}
-			},
-			onToolEvent,
-			onUsage,
-		);
+				},
+				onToolEvent,
+				onUsage,
+			);
+		} catch (err) {
+			console.error("[nzb] sendToOrchestrator threw:", err instanceof Error ? err.message : err);
+			// Attempt to notify user of the failure
+			try {
+				const errorText = `⚠️ Error: Failed to process message. Please try again.`;
+				if (placeholderMsgId) {
+					await editSafe(getBot()!.api, chatId, placeholderMsgId, errorText);
+				} else {
+					await ctx.reply(errorText, { reply_parameters: replyParams });
+				}
+			} catch {
+				/* nothing more we can do */
+			}
+		} finally {
+			stopTypingAndClearTimeout();
+		}
 	});
 }

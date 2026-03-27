@@ -35,6 +35,7 @@ function isProcessAlive(pid: number): boolean {
 		process.kill(pid, 0);
 		return true;
 	} catch {
+		// Expected: process.kill(0) throws when process doesn't exist
 		return false;
 	}
 }
@@ -73,8 +74,8 @@ function releasePidLock(): void {
 				unlinkSync(PID_FILE_PATH);
 			}
 		}
-	} catch {
-		/* best effort */
+	} catch (err: unknown) {
+		console.error("[nzb] PID lock cleanup:", err instanceof Error ? err.message : err);
 	}
 }
 
@@ -222,8 +223,8 @@ async function shutdown(): Promise<void> {
 	if (config.telegramEnabled) {
 		try {
 			await stopBot();
-		} catch {
-			/* best effort */
+		} catch (err: unknown) {
+			console.error("[nzb] stopBot during shutdown:", err instanceof Error ? err.message : err);
 		}
 	}
 
@@ -233,8 +234,8 @@ async function shutdown(): Promise<void> {
 
 	try {
 		await stopClient();
-	} catch {
-		/* best effort */
+	} catch (err: unknown) {
+		console.error("[nzb] stopClient during shutdown:", err instanceof Error ? err.message : err);
 	}
 	closeDb();
 	releasePidLock();
@@ -258,8 +259,8 @@ export async function restartDaemon(): Promise<void> {
 		await sendProactiveMessage("Restarting — back in a sec...").catch(() => {});
 		try {
 			await stopBot();
-		} catch {
-			/* best effort */
+		} catch (err: unknown) {
+			console.error("[nzb] stopBot during restart:", err instanceof Error ? err.message : err);
 		}
 	}
 
@@ -269,8 +270,8 @@ export async function restartDaemon(): Promise<void> {
 
 	try {
 		await stopClient();
-	} catch {
-		/* best effort */
+	} catch (err: unknown) {
+		console.error("[nzb] stopClient during restart:", err instanceof Error ? err.message : err);
 	}
 	closeDb();
 	releasePidLock();

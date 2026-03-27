@@ -7,7 +7,7 @@ import { cancelCurrentMessage, getWorkers, sendToOrchestrator } from "../copilot
 import { listSkills, removeSkill } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { API_TOKEN_PATH, ensureNZBHome } from "../paths.js";
-import { searchMemories } from "../store/db.js";
+import { searchMemories } from "../store/memory.js";
 import { sendPhoto } from "../telegram/bot.js";
 
 // Ensure token file exists (generate on first run)
@@ -28,9 +28,9 @@ try {
 const app = express();
 app.use(express.json());
 
-// Bearer token authentication middleware (skip /status health check)
+// Bearer token authentication middleware (skip /ping health check only)
 app.use((req: Request, res: Response, next: NextFunction) => {
-	if (!apiToken || req.path === "/status") return next();
+	if (!apiToken || req.path === "/ping") return next();
 	const auth = req.headers.authorization;
 	if (!auth || auth !== `Bearer ${apiToken}`) {
 		res.status(401).json({ error: "Unauthorized" });
@@ -43,7 +43,12 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 const sseClients = new Map<string, Response>();
 let connectionCounter = 0;
 
-// Health check
+// Minimal unauthenticated health check — no internal details
+app.get("/ping", (_req: Request, res: Response) => {
+	res.json({ status: "ok" });
+});
+
+// Authenticated status with worker details
 app.get("/status", (_req: Request, res: Response) => {
 	res.json({
 		status: "ok",
@@ -195,7 +200,13 @@ app.post("/send-photo", async (req: Request, res: Response) => {
 	const { photo, caption } = req.body as { photo?: string; caption?: string };
 
 	if (!photo || typeof photo !== "string") {
-		res.status(400).json({ error: "Missing 'photo' (file path or URL) in request body" });
+		res.status(400).json({ error: "Missing 'photo' (file path or HTTPS URL) in request body" });
+		return;
+	}
+
+	// Basic input validation before passing to sendPhoto
+	if (photo.startsWith("http://")) {
+		res.status(400).json({ error: "Only HTTPS URLs are allowed for photos" });
 		return;
 	}
 

@@ -13,6 +13,7 @@ const isWSL = (() => {
 	try {
 		return readFileSync("/proc/version", "utf-8").toLowerCase().includes("microsoft");
 	} catch {
+		// Expected: /proc/version may not exist on non-Linux systems
 		return false;
 	}
 })();
@@ -92,6 +93,7 @@ export function loadMcpConfig(): Record<string, MCPServerConfig> {
 		cachedConfig = {};
 		return cachedConfig;
 	} catch {
+		// Expected: config file may not exist or be malformed
 		cachedConfig = {};
 		return cachedConfig;
 	}

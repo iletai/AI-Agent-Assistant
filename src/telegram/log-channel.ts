@@ -29,8 +29,8 @@ export async function sendLog(level: LogLevel, message: string): Promise<void> {
 	const body = message.length > maxBody ? escapeHtml(message.slice(0, maxBody)) + " ⋯" : escapeHtml(message);
 	try {
 		await botRef.api.sendMessage(config.logChannelId, header + body, { parse_mode: "HTML" });
-	} catch {
-		// best-effort — don't crash if log channel is unreachable
+	} catch (err: unknown) {
+		console.error("[nzb] Log channel send failed:", err instanceof Error ? err.message : err);
 	}
 }
 

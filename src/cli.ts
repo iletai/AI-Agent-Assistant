@@ -31,6 +31,7 @@ function getVersion(): string {
 		const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
 		return pkg.version || "0.0.0";
 	} catch {
+		// Expected: package.json may not be found in dev/bundled environments
 		return "0.0.0";
 	}
 }

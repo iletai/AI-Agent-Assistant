@@ -30,12 +30,13 @@ async function fetchModels(): Promise<{ id: string; label: string; desc: string 
 				return { id: m.id, label: m.name, desc };
 			});
 	} catch {
+		// Expected: Copilot CLI may not be authenticated yet
 		return [];
 	} finally {
 		try {
 			await client?.stop();
-		} catch {
-			/* best-effort */
+		} catch (err: unknown) {
+			console.error("[nzb] CopilotClient stop:", err instanceof Error ? err.message : err);
 		}
 	}
 }

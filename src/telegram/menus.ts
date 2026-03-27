@@ -2,7 +2,7 @@ import { Menu } from "@grammyjs/menu";
 import { config, persistEnvVar, persistModel } from "../config.js";
 import { cancelCurrentMessage, getQueueSize, getWorkers } from "../copilot/orchestrator.js";
 import { listSkills } from "../copilot/skills.js";
-import { searchMemories } from "../store/db.js";
+import { searchMemories } from "../store/memory.js";
 import { chunkMessage, escapeHtml, truncateForTelegram } from "./formatter.js";
 
 // Worker timeout presets (ms → display label)
@@ -88,172 +88,300 @@ export function createMenus(getUptimeStr: () => string) {
 		.text(
 			() => `⏱ Timeout: ${getTimeoutLabel()}`,
 			async (ctx) => {
-				const idx = TIMEOUT_PRESETS.findIndex((p) => p.ms === config.workerTimeoutMs);
-				const next = TIMEOUT_PRESETS[(idx + 1) % TIMEOUT_PRESETS.length];
-				config.workerTimeoutMs = next.ms;
-				persistEnvVar("WORKER_TIMEOUT", String(next.ms));
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Timeout → ${next.label}`);
+				try {
+					const idx = TIMEOUT_PRESETS.findIndex((p) => p.ms === config.workerTimeoutMs);
+					const next = TIMEOUT_PRESETS[(idx + 1) % TIMEOUT_PRESETS.length];
+					config.workerTimeoutMs = next.ms;
+					persistEnvVar("WORKER_TIMEOUT", String(next.ms));
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Timeout → ${next.label}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.row()
 		.text(
 			() => `🤖 ${config.copilotModel}`,
 			async (ctx) => {
-				const models = await getAvailableModels();
-				if (models.length === 0) {
-					await ctx.answerCallbackQuery("No models available");
-					return;
+				try {
+					const models = await getAvailableModels();
+					if (models.length === 0) {
+						await ctx.answerCallbackQuery("No models available");
+						return;
+					}
+					const idx = models.indexOf(config.copilotModel);
+					const next = models[(idx + 1) % models.length];
+					config.copilotModel = next;
+					persistModel(next);
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Model → ${next}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
 				}
-				const idx = models.indexOf(config.copilotModel);
-				const next = models[(idx + 1) % models.length];
-				config.copilotModel = next;
-				persistModel(next);
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Model → ${next}`);
 			},
 		)
 		.row()
 		.text(
 			() => `${config.showReasoning ? "✅" : "❌"} Show Reasoning`,
 			async (ctx) => {
-				config.showReasoning = !config.showReasoning;
-				persistEnvVar("SHOW_REASONING", config.showReasoning ? "true" : "false");
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Reasoning ${config.showReasoning ? "ON" : "OFF"}`);
+				try {
+					config.showReasoning = !config.showReasoning;
+					persistEnvVar("SHOW_REASONING", config.showReasoning ? "true" : "false");
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Reasoning ${config.showReasoning ? "ON" : "OFF"}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.row()
 		.text(
 			() => `🧠 Think: ${config.thinkingLevel}`,
 			async (ctx) => {
-				const levels = ["off", "low", "medium", "high"] as const;
-				const idx = levels.indexOf(config.thinkingLevel);
-				const next = levels[(idx + 1) % levels.length];
-				config.thinkingLevel = next;
-				persistEnvVar("THINKING_LEVEL", next);
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Thinking → ${next}`);
+				try {
+					const levels = ["off", "low", "medium", "high"] as const;
+					const idx = levels.indexOf(config.thinkingLevel);
+					const next = levels[(idx + 1) % levels.length];
+					config.thinkingLevel = next;
+					persistEnvVar("THINKING_LEVEL", next);
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Thinking → ${next}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.text(
 			() => `📝 ${config.verboseMode ? "Verbose" : "Concise"}`,
 			async (ctx) => {
-				config.verboseMode = !config.verboseMode;
-				persistEnvVar("VERBOSE_MODE", config.verboseMode ? "true" : "false");
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Verbose ${config.verboseMode ? "ON" : "OFF"}`);
+				try {
+					config.verboseMode = !config.verboseMode;
+					persistEnvVar("VERBOSE_MODE", config.verboseMode ? "true" : "false");
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Verbose ${config.verboseMode ? "ON" : "OFF"}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.row()
 		.text(
 			() => `💡 Reasoning: ${config.reasoningEffort}`,
 			async (ctx) => {
-				const efforts = ["low", "medium", "high"] as const;
-				const idx = efforts.indexOf(config.reasoningEffort);
-				const next = efforts[(idx + 1) % efforts.length];
-				config.reasoningEffort = next;
-				persistEnvVar("REASONING_EFFORT", next);
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Reasoning → ${next}`);
+				try {
+					const efforts = ["low", "medium", "high"] as const;
+					const idx = efforts.indexOf(config.reasoningEffort);
+					const next = efforts[(idx + 1) % efforts.length];
+					config.reasoningEffort = next;
+					persistEnvVar("REASONING_EFFORT", next);
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Reasoning → ${next}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.row()
 		.text(
 			() => `📊 Usage: ${config.usageMode}`,
 			async (ctx) => {
-				const modes = ["off", "tokens", "full"] as const;
-				const idx = modes.indexOf(config.usageMode);
-				const next = modes[(idx + 1) % modes.length];
-				config.usageMode = next;
-				persistEnvVar("USAGE_MODE", next);
-				ctx.menu.update();
-				await ctx.editMessageText(buildSettingsText(getUptimeStr));
-				await ctx.answerCallbackQuery(`Usage → ${next}`);
+				try {
+					const modes = ["off", "tokens", "full"] as const;
+					const idx = modes.indexOf(config.usageMode);
+					const next = modes[(idx + 1) % modes.length];
+					config.usageMode = next;
+					persistEnvVar("USAGE_MODE", next);
+					ctx.menu.update();
+					await ctx.editMessageText(buildSettingsText(getUptimeStr));
+					await ctx.answerCallbackQuery(`Usage → ${next}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.row()
 		.text(
 			() => `📌 v${process.env.npm_package_version || "?"} · uptime ${getUptimeStr()}`,
 			async (ctx) => {
-				await ctx.answerCallbackQuery(`Uptime: ${getUptimeStr()}`);
+				try {
+					await ctx.answerCallbackQuery(`Uptime: ${getUptimeStr()}`);
+				} catch (err) {
+					console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+					await ctx.answerCallbackQuery({
+						text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+						show_alert: true,
+					}).catch(() => {});
+				}
 			},
 		)
 		.row()
 		.back("🔙 Back", async (ctx) => {
-			await ctx.editMessageText("NZB Menu:");
+			try {
+				await ctx.editMessageText("NZB Menu:");
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
+			}
 		});
 
 	// Main interactive menu with navigation
 	const mainMenu = new Menu("main-menu")
 		.text("📊 Status", async (ctx) => {
-			const workers = Array.from(getWorkers().values());
-			const lines = [
-				"📊 NZB Status",
-				`Model: ${config.copilotModel}`,
-				`Thinking: ${config.thinkingLevel}`,
-				`Verbose: ${config.verboseMode ? "on" : "off"}`,
-				`Usage: ${config.usageMode}`,
-				`Uptime: ${getUptimeStr()}`,
-				`Workers: ${workers.length} active`,
-				`Queue: ${getQueueSize()} pending`,
-			];
-			await ctx.answerCallbackQuery();
-			await ctx.reply(lines.join("\n"));
+			try {
+				const workers = Array.from(getWorkers().values());
+				const lines = [
+					"📊 NZB Status",
+					`Model: ${config.copilotModel}`,
+					`Thinking: ${config.thinkingLevel}`,
+					`Verbose: ${config.verboseMode ? "on" : "off"}`,
+					`Usage: ${config.usageMode}`,
+					`Uptime: ${getUptimeStr()}`,
+					`Workers: ${workers.length} active`,
+					`Queue: ${getQueueSize()} pending`,
+				];
+				await ctx.answerCallbackQuery();
+				await ctx.reply(lines.join("\n"));
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
+			}
 		})
 		.text("🤖 Model", async (ctx) => {
-			await ctx.answerCallbackQuery();
-			await ctx.reply(`Current model: ${config.copilotModel}`);
+			try {
+				await ctx.answerCallbackQuery();
+				await ctx.reply(`Current model: ${config.copilotModel}`);
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
+			}
 		})
 		.row()
 		.text("👥 Workers", async (ctx) => {
-			await ctx.answerCallbackQuery();
-			const workers = Array.from(getWorkers().values());
-			if (workers.length === 0) {
-				await ctx.reply("No active worker sessions.");
-			} else {
-				const lines = workers.map((w) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
-				await ctx.reply(truncateForTelegram(lines.join("\n")));
+			try {
+				await ctx.answerCallbackQuery();
+				const workers = Array.from(getWorkers().values());
+				if (workers.length === 0) {
+					await ctx.reply("No active worker sessions.");
+				} else {
+					const lines = workers.map((w) => `• ${w.name} (${w.workingDir}) — ${w.status}`);
+					await ctx.reply(truncateForTelegram(lines.join("\n")));
+				}
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
 			}
 		})
 		.text("🧠 Skills", async (ctx) => {
-			await ctx.answerCallbackQuery();
-			const skills = listSkills();
-			if (skills.length === 0) {
-				await ctx.reply("No skills installed.");
-			} else {
-				const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
-				await ctx.reply(truncateForTelegram(lines.join("\n")));
+			try {
+				await ctx.answerCallbackQuery();
+				const skills = listSkills();
+				if (skills.length === 0) {
+					await ctx.reply("No skills installed.");
+				} else {
+					const lines = skills.map((s) => `• ${s.name} (${s.source}) — ${s.description}`);
+					await ctx.reply(truncateForTelegram(lines.join("\n")));
+				}
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
 			}
 		})
 		.row()
 		.text("🗂 Memory", async (ctx) => {
-			await ctx.answerCallbackQuery();
-			const memories = searchMemories(undefined, undefined, 50);
-			if (memories.length === 0) {
-				await ctx.reply("No memories stored.");
-			} else {
-				const formatted = formatMemoryList(memories);
-				const chunks = chunkMessage(formatted);
-				for (const chunk of chunks) {
-					await ctx.reply(chunk, { parse_mode: "HTML" });
+			try {
+				await ctx.answerCallbackQuery();
+				const memories = searchMemories(undefined, undefined, 50);
+				if (memories.length === 0) {
+					await ctx.reply("No memories stored.");
+				} else {
+					const formatted = formatMemoryList(memories);
+					const chunks = chunkMessage(formatted);
+					for (const chunk of chunks) {
+						await ctx.reply(chunk, { parse_mode: "HTML" });
+					}
 				}
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
 			}
 		})
 		.submenu("⚙️ Settings", "settings-menu", async (ctx) => {
-			await ctx.editMessageText(buildSettingsText(getUptimeStr));
+			try {
+				await ctx.editMessageText(buildSettingsText(getUptimeStr));
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
+			}
 		})
 		.row()
 		.text("❌ Cancel", async (ctx) => {
-			await ctx.answerCallbackQuery();
-			const cancelled = await cancelCurrentMessage();
-			await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
+			try {
+				await ctx.answerCallbackQuery();
+				const cancelled = await cancelCurrentMessage();
+				await ctx.reply(cancelled ? "Cancelled." : "Nothing to cancel.");
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
+			}
 		});
 
 	// Register sub-menu as child

@@ -11,7 +11,7 @@ import {
 import { listSkills } from "../../copilot/skills.js";
 import type { WorkerInfo } from "../../copilot/tools.js";
 import { restartDaemon } from "../../daemon.js";
-import { searchMemories } from "../../store/db.js";
+import { searchMemories } from "../../store/memory.js";
 import { chunkMessage } from "../formatter.js";
 import { buildSettingsText, formatMemoryList } from "../menus.js";
 import { getReactionHelpText } from "./reactions.js";

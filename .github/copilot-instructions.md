@@ -320,7 +320,7 @@ Follow this order in imports:
 
 | Skill | Description |
 |-------|-------------|
-| [copilot-sdk](.github/skills/copilot-sdk/SKILL.md) | Build agentic applications with GitHub Copilot SDK. \| Embed Copilot's agentic workflows in any application using Python, TypeScript, Go, or .NET. |
-| [telegram-bot-builder](.github/skills/skills/telegram-bot-builder/SKILL.md) | Expert in building Telegram bots that solve real problems - from simple automation to complex AI-powered bots. Covers bot architecture, the Telegram Bot API, user experience, monetization strategie... |
-| [find-skills](.github/skills/skills/find-skills/SKILL.md) | Helps users discover agent skills when they ask questions like "how do I do X", "find a skill for X", "is there a skill that can...", or express interest in extending capabilities. Always ask the u... |
-| [Google (gogcli)](.github/skills/skills/gogcli/SKILL.md) | Access Gmail, Google Calendar, Drive, Contacts, Tasks, Sheets, Docs, and more via the gog CLI. Use when the user asks about email, calendar, files, contacts, or any Google service. |
+| [copilot-sdk](../.github/skills/copilot-sdk/SKILL.md) | Build agentic applications with GitHub Copilot SDK. \| Embed Copilot's agentic workflows in any application using Python, TypeScript, Go, or .NET. |
+| [telegram-bot-builder](../.github/skills/skills/telegram-bot-builder/SKILL.md) | Expert in building Telegram bots that solve real problems - from simple automation to complex AI-powered bots. Covers bot architecture, the Telegram Bot API, user experience, monetization strategie... |
+| [find-skills](../.github/skills/skills/find-skills/SKILL.md) | Helps users discover agent skills when they ask questions like "how do I do X", "find a skill for X", "is there a skill that can...", or express interest in extending capabilities. Always ask the u... |
+| [Google (gogcli)](../.github/skills/skills/gogcli/SKILL.md) | Access Gmail, Google Calendar, Drive, Contacts, Tasks, Sheets, Docs, and more via the gog CLI. Use when the user asks about email, calendar, files, contacts, or any Google service. |

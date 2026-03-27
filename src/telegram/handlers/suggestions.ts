@@ -118,6 +118,20 @@ export function buildSmartSuggestions(response: string, prompt: string, maxButto
 // In-memory store for pending smart suggestion prompts (TTL: 5 minutes)
 const pendingPrompts = new Map<string, { prompt: string; response: string; timestamp: number }>();
 
+const SUGGESTION_MAX_AGE_MS = 5 * 60_000;
+const SUGGESTION_CLEANUP_INTERVAL_MS = 60_000;
+const MAX_PENDING_PROMPTS = 1000;
+
+// Periodic cleanup to prevent unbounded memory growth
+setInterval(() => {
+	const cutoff = Date.now() - SUGGESTION_MAX_AGE_MS;
+	for (const [key, value] of pendingPrompts) {
+		if (value.timestamp < cutoff) {
+			pendingPrompts.delete(key);
+		}
+	}
+}, SUGGESTION_CLEANUP_INTERVAL_MS).unref();
+
 /** Store the context for smart suggestion callbacks. */
 export function storeSuggestionContext(
 	callbackPrefix: string,
@@ -129,9 +143,19 @@ export function storeSuggestionContext(
 	pendingPrompts.set(key, { prompt, response, timestamp: Date.now() });
 
 	// Cleanup old entries (older than 5 minutes)
-	const cutoff = Date.now() - 5 * 60_000;
+	const cutoff = Date.now() - SUGGESTION_MAX_AGE_MS;
 	for (const [k, v] of pendingPrompts) {
 		if (v.timestamp < cutoff) pendingPrompts.delete(k);
+	}
+
+	// Enforce max size to prevent unbounded growth
+	if (pendingPrompts.size > MAX_PENDING_PROMPTS) {
+		const entries = Array.from(pendingPrompts.entries())
+			.sort((a, b) => a[1].timestamp - b[1].timestamp);
+		const toRemove = entries.slice(0, pendingPrompts.size - MAX_PENDING_PROMPTS);
+		for (const [rmKey] of toRemove) {
+			pendingPrompts.delete(rmKey);
+		}
 	}
 }
 
