@@ -94,6 +94,41 @@ db.exec(`
         FOREIGN KEY(team_id) REFERENCES agent_teams(id)
       )
     `);
+
+	db.exec(`
+      CREATE TABLE IF NOT EXISTS cron_jobs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        cron_expression TEXT NOT NULL,
+        task_type TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        notify_telegram INTEGER NOT NULL DEFAULT 1,
+        max_retries INTEGER NOT NULL DEFAULT 0,
+        timeout_ms INTEGER NOT NULL DEFAULT 300000,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        last_run_at TEXT,
+        next_run_at TEXT
+      )
+    `);
+
+	db.exec(`
+      CREATE TABLE IF NOT EXISTS cron_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT DEFAULT (datetime('now')),
+        finished_at TEXT,
+        result TEXT,
+        error TEXT,
+        duration_ms INTEGER,
+        FOREIGN KEY(job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
+      )
+    `);
+
+	db.exec(`CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id, started_at)`);
+
 // Migrate: if the table already existed with a stricter CHECK, recreate it
 try {
 db.prepare(

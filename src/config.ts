@@ -93,6 +93,10 @@ export const config = {
 	groupMentionOnly: process.env.GROUP_MENTION_ONLY !== "false",
 	/** Reasoning effort: low | medium | high */
 	reasoningEffort: validateEnum(process.env.REASONING_EFFORT, ["low", "medium", "high"] as const, "medium", "REASONING_EFFORT"),
+	/** Model failover chain: comma-separated list of fallback models */
+	modelFailoverChain: process.env.MODEL_FAILOVER_CHAIN?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+	/** Cooldown duration (ms) for a model after failure before retrying it */
+	modelCooldownMs: parseInt(process.env.MODEL_COOLDOWN_MS ?? "60000"),
 };
 
 /** Persist an env variable to ~/.nzb/.env */

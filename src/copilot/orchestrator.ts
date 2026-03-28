@@ -8,6 +8,7 @@ import { completeTeam, updateTeamMemberResult } from "../store/team-store.js";
 import { formatAge, withTimeout } from "../utils.js";
 import { resetClient } from "./client.js";
 import { loadMcpConfig } from "./mcp-config.js";
+import { ModelFailoverManager } from "./model-failover.js";
 import { getSkillDirectories } from "./skills.js";
 import { getOrchestratorSystemMessage } from "./system-message.js";
 import { createTools } from "./tools.js";
@@ -66,6 +67,9 @@ const workers = new Map<string, WorkerInfo>();
 const teams = new Map<string, TeamInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;
 let workerReaperTimer: ReturnType<typeof setInterval> | undefined;
+
+// Model failover manager — initialised lazily in initOrchestrator
+let failoverManager: ModelFailoverManager | undefined;
 
 // Persistent orchestrator session
 let orchestratorSession: CopilotSession | undefined;
@@ -421,6 +425,12 @@ export async function initOrchestrator(client: CopilotClient): Promise<void> {
 	copilotClient = client;
 	const { mcpServers, skillDirectories } = getSessionConfig();
 
+	// Initialise failover manager from config
+	failoverManager = new ModelFailoverManager(config.modelFailoverChain, config.modelCooldownMs);
+	if (failoverManager.enabled) {
+		console.log(`[nzb] Model failover chain: ${config.modelFailoverChain.join(" → ")}`);
+	}
+
 	// Validate configured model against available models (skip for default — saves 1-3s startup)
 	if (config.copilotModel !== DEFAULT_MODEL) {
 		try {
@@ -732,6 +742,10 @@ export async function sendToOrchestrator(
 					processQueue();
 				});
 				// Deliver response to user FIRST, then log best-effort
+				// Record success for failover tracking
+				if (failoverManager?.enabled) {
+					failoverManager.recordSuccess(config.copilotModel);
+				}
 				try {
 					logMessage("out", sourceLabel, finalContent);
 				} catch {
@@ -799,6 +813,21 @@ export async function sendToOrchestrator(
 				}
 
 				if (isRecoverableError(err) && attempt < MAX_RETRIES) {
+					// Model failover: if it's a model-level error and we have fallbacks, switch model
+					if (failoverManager?.enabled && failoverManager.isModelError(err)) {
+						const failedModel = config.copilotModel;
+						failoverManager.recordFailure(failedModel);
+						const fallback = failoverManager.getNextFallback(failedModel);
+						if (fallback) {
+							console.log(`[nzb] Model failover: ${failedModel} → ${fallback} (${msg})`);
+							config.copilotModel = fallback;
+							// Force session recreation with the new model
+							orchestratorSession = undefined;
+							sessionCreatedAt = undefined;
+							deleteState(ORCHESTRATOR_SESSION_KEY);
+						}
+					}
+
 					const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)];
 					console.error(`[nzb] Recoverable error: ${msg}. Retry ${attempt + 1}/${MAX_RETRIES} after ${delay}ms…`);
 					await sleep(delay);
@@ -809,6 +838,27 @@ export async function sendToOrchestrator(
 						/* will fail again on next attempt */
 					}
 					continue;
+				}
+
+				// Model-level error with failover available — try switching model even if not normally recoverable
+				if (failoverManager?.enabled && failoverManager.isModelError(err) && attempt < MAX_RETRIES) {
+					const failedModel = config.copilotModel;
+					failoverManager.recordFailure(failedModel);
+					const fallback = failoverManager.getNextFallback(failedModel);
+					if (fallback) {
+						console.log(`[nzb] Model failover: ${failedModel} → ${fallback} (${msg})`);
+						config.copilotModel = fallback;
+						orchestratorSession = undefined;
+						sessionCreatedAt = undefined;
+						deleteState(ORCHESTRATOR_SESSION_KEY);
+						await sleep(RECONNECT_DELAYS_MS[0]);
+						try {
+							await ensureClient();
+						} catch {
+							/* will fail again on next attempt */
+						}
+						continue;
+					}
 				}
 
 				console.error(`[nzb] Error processing message: ${msg}`);
@@ -904,4 +954,9 @@ export async function compactSession(): Promise<string> {
 	} catch (err) {
 		return `Compaction failed: ${err instanceof Error ? err.message : String(err)}`;
 	}
+}
+
+/** Expose the failover manager so tools can query health status. */
+export function getFailoverManager(): ModelFailoverManager | undefined {
+	return failoverManager;
 }

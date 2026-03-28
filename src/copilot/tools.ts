@@ -4,10 +4,21 @@ import { homedir } from "os";
 import { join, resolve, sep } from "path";
 import { z } from "zod";
 import { config, persistModel } from "../config.js";
+import { scheduleJob, triggerJob, unscheduleJob, getSchedulerStatus } from "../cron/scheduler.js";
 import { SESSIONS_DIR } from "../paths.js";
 import { getDb } from "../store/db.js";
+import {
+	createCronJob,
+	deleteCronJob,
+	getCronJob,
+	getRecentRuns,
+	listCronJobs,
+	updateCronJob,
+} from "../store/cron-store.js";
+import type { CronTaskType } from "../store/cron-store.js";
 import { withTimeout } from "../utils.js";
 import { addMemory, removeMemory, searchMemories } from "../store/memory.js";
+import { getFailoverManager } from "./orchestrator.js";
 import { createSkill, listSkills, removeSkill } from "./skills.js";
 import type { TeamInfo, ToolDeps, WorkerEvent, WorkerInfo } from "./types.js";
 
@@ -745,6 +756,33 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 			},
 		}),
 
+		defineTool("model_health", {
+			description:
+				"Show health status of all models in the failover chain. " +
+				"Displays model name, provider, status (healthy/cooldown/degraded), failure count, and last failure time. " +
+				"Use when the user asks about model health, failover status, or which models are available in the chain.",
+			parameters: z.object({}),
+			handler: async () => {
+				const manager = getFailoverManager();
+				if (!manager || !manager.enabled) {
+					return (
+						`Model failover is not configured. Current model: ${config.copilotModel}\n\n` +
+						`To enable failover, set MODEL_FAILOVER_CHAIN in ~/.nzb/.env with a comma-separated list of models.\n` +
+						`Example: MODEL_FAILOVER_CHAIN=claude-sonnet-4.6,gpt-4.1,gemini-2.0-flash`
+					);
+				}
+
+				const statuses = manager.getHealthStatus();
+				const lines = statuses.map((s) => {
+					const icon = s.status === "healthy" ? "✅" : s.status === "cooldown" ? "⏳" : "⚠️";
+					const lastFail = s.lastFailure ? ` (last fail: ${s.lastFailure})` : "";
+					return `${icon} ${s.model} [${s.provider}] — ${s.status} | failures: ${s.failures} | successes: ${s.successCount}${lastFail}`;
+				});
+
+				return `Model Failover Health (active: ${config.copilotModel}):\n${lines.join("\n")}`;
+			},
+		}),
+
 		defineTool("remember", {
 			description:
 				"Save something to NZB's long-term memory. Use when the user says 'remember that...', " +
@@ -804,6 +842,107 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				return removed
 					? `Memory #${args.memory_id} forgotten.`
 					: `Memory #${args.memory_id} not found — it may have already been removed.`;
+			},
+		}),
+
+		defineTool("manage_cron", {
+			description:
+				"Manage scheduled cron jobs. Use to create, list, remove, enable, disable, or trigger " +
+				"recurring tasks like health checks, backups, notifications, webhook calls, or scheduled prompts.",
+			parameters: z.object({
+				action: z
+					.enum(["list", "add", "remove", "enable", "disable", "trigger", "history"])
+					.describe("Action to perform"),
+				job_id: z.string().optional().describe("Job ID (required for remove/enable/disable/trigger/history)"),
+				name: z.string().optional().describe("Job name (required for add)"),
+				cron_expression: z
+					.string()
+					.optional()
+					.describe("Cron expression, e.g. '0 */6 * * *' for every 6 hours (required for add)"),
+				task_type: z
+					.enum(["prompt", "health_check", "backup", "notification", "webhook"] as const)
+					.optional()
+					.describe("Task type (required for add)"),
+				payload: z.string().optional().describe("JSON payload for the task (optional for add)"),
+				notify_telegram: z.boolean().optional().describe("Send result to Telegram (default: true)"),
+			}),
+			handler: async (args) => {
+				try {
+					switch (args.action) {
+						case "list": {
+							const status = getSchedulerStatus();
+							if (status.length === 0) return "No cron jobs configured.";
+							const lines = status.map(
+								(j) =>
+									`• ${j.id} — ${j.name} [${j.taskType}] ${j.enabled ? "✅" : "⏸️"} ` +
+									`${j.active ? "active" : "inactive"} | ${j.cronExpression}` +
+									(j.nextRun ? ` | next: ${j.nextRun}` : ""),
+							);
+							return `${status.length} cron job(s):\n${lines.join("\n")}`;
+						}
+						case "add": {
+							if (!args.job_id || !args.name || !args.cron_expression || !args.task_type) {
+								return "Missing required fields: job_id, name, cron_expression, task_type";
+							}
+							const job = createCronJob({
+								id: args.job_id,
+								name: args.name,
+								cronExpression: args.cron_expression,
+								taskType: args.task_type,
+								payload: args.payload,
+								notifyTelegram: args.notify_telegram,
+							});
+							if (job.enabled) scheduleJob(job);
+							return `Cron job '${job.id}' (${job.name}) created and scheduled: ${job.cronExpression}`;
+						}
+						case "remove": {
+							if (!args.job_id) return "Missing job_id";
+							unscheduleJob(args.job_id);
+							const deleted = deleteCronJob(args.job_id);
+							return deleted
+								? `Cron job '${args.job_id}' deleted.`
+								: `Job '${args.job_id}' not found.`;
+						}
+						case "enable": {
+							if (!args.job_id) return "Missing job_id";
+							const enabled = updateCronJob(args.job_id, { enabled: true });
+							if (!enabled) return `Job '${args.job_id}' not found.`;
+							scheduleJob(enabled);
+							return `Cron job '${args.job_id}' enabled and scheduled.`;
+						}
+						case "disable": {
+							if (!args.job_id) return "Missing job_id";
+							const disabled = updateCronJob(args.job_id, { enabled: false });
+							if (!disabled) return `Job '${args.job_id}' not found.`;
+							unscheduleJob(args.job_id);
+							return `Cron job '${args.job_id}' disabled.`;
+						}
+						case "trigger": {
+							if (!args.job_id) return "Missing job_id";
+							const result = await triggerJob(args.job_id);
+							return `Triggered '${args.job_id}':\n${result}`;
+						}
+						case "history": {
+							if (!args.job_id) return "Missing job_id";
+							const job = getCronJob(args.job_id);
+							if (!job) return `Job '${args.job_id}' not found.`;
+							const runs = getRecentRuns(args.job_id);
+							if (runs.length === 0) return `No runs recorded for '${args.job_id}'.`;
+							const lines = runs.map(
+								(r) =>
+									`• ${r.status} at ${r.startedAt}` +
+									(r.durationMs !== null ? ` (${r.durationMs}ms)` : "") +
+									(r.error ? ` — ${r.error}` : "") +
+									(r.result ? ` — ${r.result.slice(0, 100)}` : ""),
+							);
+							return `Recent runs for '${job.name}':\n${lines.join("\n")}`;
+						}
+						default:
+							return `Unknown action: ${args.action}`;
+					}
+				} catch (err: unknown) {
+					return `Cron error: ${err instanceof Error ? err.message : String(err)}`;
+				}
 			},
 		}),
 

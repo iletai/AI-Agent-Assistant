@@ -1,6 +1,6 @@
 {
     "name": "@iletai/nzb",
-    "version": "1.7.4",
+    "version": "1.8.0",
     "description": "NZB — a personal AI assistant for developers, built on the GitHub Copilot SDK",
     "bin": {
         "nzb": "dist/cli.js"
@@ -54,6 +54,7 @@
         "@grammyjs/runner": "^2.0.3",
         "@grammyjs/transformer-throttler": "^1.2.1",
         "better-sqlite3": "^12.6.2",
+        "croner": "^10.0.1",
         "dotenv": "^17.3.1",
         "express": "^5.2.1",
         "grammy": "^1.40.0",

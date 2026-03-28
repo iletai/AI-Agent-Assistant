@@ -14,6 +14,7 @@ import {
 import { PID_FILE_PATH } from "./paths.js";
 import { closeDb, getDb } from "./store/db.js";
 import { createBot, sendProactiveMessage, sendWorkerNotification, startBot, stopBot } from "./telegram/bot.js";
+import { startCronScheduler, stopCronScheduler } from "./cron/scheduler.js";
 import { checkForUpdate } from "./update.js";
 
 // Log the active CA bundle (injected by cli.ts via re-exec).
@@ -152,6 +153,9 @@ async function main(): Promise<void> {
 	// Start HTTP API for TUI
 	await startApiServer();
 
+	// Start cron scheduler
+	startCronScheduler();
+
 	// Start Telegram bot (if configured)
 	if (config.telegramEnabled) {
 		createBot();
@@ -219,6 +223,7 @@ async function shutdown(): Promise<void> {
 
 	// Stop health check timer first
 	stopHealthCheck();
+	stopCronScheduler();
 
 	if (config.telegramEnabled) {
 		try {
@@ -248,6 +253,7 @@ export async function restartDaemon(): Promise<void> {
 	console.log("[nzb] Restarting...");
 
 	stopHealthCheck();
+	stopCronScheduler();
 
 	const activeWorkers = getWorkers();
 	const runningCount = Array.from(activeWorkers.values()).filter((w) => w.status === "running").length;

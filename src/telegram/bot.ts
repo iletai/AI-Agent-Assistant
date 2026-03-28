@@ -10,6 +10,7 @@ import { config } from "../config.js";
 import { getPersistedUpdateOffset, isUpdateDuplicate, persistUpdateOffset } from "./dedup.js";
 import { registerCallbackHandlers } from "./handlers/callbacks.js";
 import { registerCommandHandlers } from "./handlers/commands.js";
+import { registerCronHandlers } from "./handlers/cron.js";
 import { sendFormattedReply } from "./handlers/helpers.js";
 import { registerInlineQueryHandler } from "./handlers/inline.js";
 import { registerMediaHandlers } from "./handlers/media.js";
@@ -118,6 +119,7 @@ export function createBot(): Bot {
 
 	// --- Handler registrations ---
 	registerCallbackHandlers(bot);
+	registerCronHandlers(bot);
 	registerInlineQueryHandler(bot);
 	registerSmartSuggestionHandlers(bot);
 	registerReactionHandlers(bot);
@@ -173,6 +175,7 @@ export async function startBot(): Promise<void> {
 			{ command: "workers", description: "List active workers" },
 			{ command: "skills", description: "List installed skills" },
 			{ command: "memory", description: "Show stored memories" },
+			{ command: "cron", description: "Manage cron jobs" },
 			{ command: "settings", description: "Bot settings" },
 			{ command: "restart", description: "Restart NZB" },
 		]);

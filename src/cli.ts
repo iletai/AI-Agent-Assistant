@@ -50,6 +50,7 @@ Commands:
   tui         Connect to the daemon via terminal UI
   setup       Interactive first-run configuration
   update      Check for updates and install the latest version
+  cron        Manage scheduled cron jobs
   help        Show this help message
 
 Flags (start):
@@ -102,6 +103,98 @@ switch (command) {
 		} else {
 			console.error(`Update failed: ${result.output}`);
 			process.exit(1);
+		}
+		break;
+	}
+	case "cron": {
+		const subcommand = args[1] || "list";
+		const { listCronJobs, createCronJob, deleteCronJob, updateCronJob } = await import("./store/cron-store.js");
+		switch (subcommand) {
+			case "list": {
+				const jobs = listCronJobs();
+				if (jobs.length === 0) {
+					console.log("No cron jobs configured.");
+				} else {
+					for (const job of jobs) {
+						const status = job.enabled ? "✅" : "⏸️";
+						console.log(`${status} ${job.id} — ${job.name} [${job.taskType}] ${job.cronExpression}`);
+					}
+				}
+				break;
+			}
+			case "add": {
+				const id = args[2];
+				const name = args[3];
+				const cronExpr = args[4];
+				const taskType = args[5];
+				if (!id || !name || !cronExpr || !taskType) {
+					console.error("Usage: nzb cron add <id> <name> <cron-expression> <task-type> [payload-json]");
+					console.error("Task types: prompt, health_check, backup, notification, webhook");
+					process.exit(1);
+				}
+				const validTypes = ["prompt", "health_check", "backup", "notification", "webhook"];
+				if (!validTypes.includes(taskType)) {
+					console.error(`Invalid task type: ${taskType}. Valid: ${validTypes.join(", ")}`);
+					process.exit(1);
+				}
+				const { Cron } = await import("croner");
+				try {
+					new Cron(cronExpr);
+				} catch {
+					console.error(`Invalid cron expression: ${cronExpr}`);
+					process.exit(1);
+				}
+				const payload = args[6] || "{}";
+				try {
+					const job = createCronJob({
+						id,
+						name,
+						cronExpression: cronExpr,
+						taskType: taskType as "prompt" | "health_check" | "backup" | "notification" | "webhook",
+						payload,
+					});
+					console.log(`Created cron job '${job.id}' (${job.name}): ${job.cronExpression}`);
+					console.log("Note: The job will be scheduled when the daemon starts.");
+				} catch (err: unknown) {
+					console.error("Error:", err instanceof Error ? err.message : err);
+					process.exit(1);
+				}
+				break;
+			}
+			case "remove": {
+				const removeId = args[2];
+				if (!removeId) {
+					console.error("Usage: nzb cron remove <id>");
+					process.exit(1);
+				}
+				const deleted = deleteCronJob(removeId);
+				console.log(deleted ? `Deleted cron job '${removeId}'.` : `Job '${removeId}' not found.`);
+				break;
+			}
+			case "enable": {
+				const enableId = args[2];
+				if (!enableId) {
+					console.error("Usage: nzb cron enable <id>");
+					process.exit(1);
+				}
+				const enabled = updateCronJob(enableId, { enabled: true });
+				console.log(enabled ? `Enabled cron job '${enableId}'.` : `Job '${enableId}' not found.`);
+				break;
+			}
+			case "disable": {
+				const disableId = args[2];
+				if (!disableId) {
+					console.error("Usage: nzb cron disable <id>");
+					process.exit(1);
+				}
+				const disabled = updateCronJob(disableId, { enabled: false });
+				console.log(disabled ? `Disabled cron job '${disableId}'.` : `Job '${disableId}' not found.`);
+				break;
+			}
+			default:
+				console.error(`Unknown cron subcommand: ${subcommand}`);
+				console.error("Available: list, add, remove, enable, disable");
+				process.exit(1);
 		}
 		break;
 	}

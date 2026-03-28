@@ -14,6 +14,7 @@ import { restartDaemon } from "../../daemon.js";
 import { searchMemories } from "../../store/memory.js";
 import { chunkMessage } from "../formatter.js";
 import { buildSettingsText, formatMemoryList } from "../menus.js";
+import { sendCronMenu } from "./cron.js";
 import { getReactionHelpText } from "./reactions.js";
 
 export function registerCommandHandlers(
@@ -51,6 +52,7 @@ export function registerCommandHandlers(
 				"/memory — Stored memories\n" +
 				"/skills — Installed skills\n" +
 				"/workers — Active worker sessions\n" +
+				"/cron — Manage cron jobs\n" +
 				"/restart — Restart NZB\n\n" +
 				"⚡ Breakthrough Features:\n" +
 				"• @bot query — Use me inline in any chat!\n" +
@@ -207,6 +209,10 @@ export function registerCommandHandlers(
 
 	bot.command("settings", async (ctx) => {
 		await ctx.reply(buildSettingsText(getUptimeStr), { reply_markup: settingsMenu });
+	});
+
+	bot.command("cron", async (ctx) => {
+		await sendCronMenu(ctx);
 	});
 
 	// Reply keyboard button handlers — intercept before general text handler
