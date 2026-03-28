@@ -25,6 +25,15 @@ const SCHEDULE_PRESETS = [
 	{ label: "Every day at 8AM", cron: "0 8 * * *" },
 ] as const;
 
+// ── Model presets ────────────────────────────────────────────────────
+
+const MODEL_PRESETS = [
+	{ label: "⚡ Haiku (fast & cheap)", id: "claude-haiku-4.5", short: "haiku" },
+	{ label: "⚖️ Sonnet (balanced)", id: "claude-sonnet-4", short: "sonnet" },
+	{ label: "🧠 Opus (most capable)", id: "claude-opus-4.6", short: "opus" },
+	{ label: "⚡ GPT-4.1 (fast alt)", id: "gpt-4.1", short: "gpt-4.1" },
+] as const;
+
 // In-memory state for users awaiting custom cron expression input
 const pendingCustomSchedule = new Map<number, string>();
 
@@ -57,6 +66,7 @@ function buildJobListKeyboard(jobs: CronJob[], page: number, totalPages: number)
 		const toggleLabel = job.enabled ? "⏸" : "▶️";
 		kb.text(`${toggleLabel} ${job.name}`, `cron:toggle:${job.id}`)
 			.text("⏱", `cron:schedule:${job.id}`)
+			.text("🤖", `cron:model:${job.id}`)
 			.text("▶ Run", `cron:trigger:${job.id}`)
 			.text("📊", `cron:history:${job.id}`)
 			.text("🗑", `cron:delete:${job.id}`)
@@ -80,6 +90,19 @@ function buildScheduleKeyboard(jobId: string): InlineKeyboard {
 		kb.text(`${preset.label}`, `cron:setsched:${jobId}:${i}`).row();
 	}
 	kb.text("✏️ Custom", `cron:customsched:${jobId}`).row();
+	kb.text("🔙 Back to list", "cron:list");
+	return kb;
+}
+
+function buildModelKeyboard(jobId: string, currentModel: string | null): InlineKeyboard {
+	const kb = new InlineKeyboard();
+	for (let i = 0; i < MODEL_PRESETS.length; i++) {
+		const preset = MODEL_PRESETS[i];
+		const current = currentModel === preset.id ? " ✓" : "";
+		kb.text(`${preset.label}${current}`, `cron:setmodel:${jobId}:${i}`).row();
+	}
+	const noOverride = !currentModel ? " ✓" : "";
+	kb.text(`🚫 No model override (use default)${noOverride}`, `cron:setmodel:${jobId}:none`).row();
 	kb.text("🔙 Back to list", "cron:list");
 	return kb;
 }
@@ -111,9 +134,12 @@ function formatJobLine(job: CronJob, index: number): string {
 				minute: "2-digit",
 			})
 		: "—";
+	const modelTag = job.model
+		? ` | 🤖 ${MODEL_PRESETS.find((p) => p.id === job.model)?.short ?? job.model}`
+		: "";
 	return (
 		`${index}. ${status} ${job.name}\n` +
-		`   ⏰ ${job.cronExpression} | 🏷 ${job.taskType}\n` +
+		`   ⏰ ${job.cronExpression} | 🏷 ${job.taskType}${modelTag}\n` +
 		`   📅 Next: ${nextRun}`
 	);
 }
@@ -494,6 +520,82 @@ export function registerCronHandlers(bot: Bot): void {
 				console.error("[nzb] Cron set schedule error:", err instanceof Error ? err.message : err);
 				await ctx
 					.answerCallbackQuery({ text: "Error updating schedule", show_alert: true })
+					.catch(() => {});
+			}
+		}
+	});
+
+	// Model selection — show model presets for a job
+	bot.callbackQuery(/^cron:model:(.+)$/, async (ctx) => {
+		try {
+			const jobId = ctx.match[1];
+			const job = getCronJob(jobId);
+			if (!job) {
+				await ctx.answerCallbackQuery({ text: "Job not found", show_alert: true });
+				return;
+			}
+
+			const currentLabel = job.model
+				? MODEL_PRESETS.find((p) => p.id === job.model)?.label ?? job.model
+				: "Default (no override)";
+
+			const text =
+				`🤖 Change Model: ${job.name}\n\n` +
+				`Current: ${currentLabel}\n\n` +
+				"Select a model for this job:";
+
+			await ctx.answerCallbackQuery();
+			await ctx.editMessageText(text, {
+				reply_markup: buildModelKeyboard(job.id, job.model),
+			});
+		} catch (err) {
+			if (!isMessageNotModifiedError(err)) {
+				console.error("[nzb] Cron model menu error:", err instanceof Error ? err.message : err);
+				await ctx
+					.answerCallbackQuery({ text: "Error loading model options", show_alert: true })
+					.catch(() => {});
+			}
+		}
+	});
+
+	// Set model from preset or clear override
+	bot.callbackQuery(/^cron:setmodel:(.+):(none|\d+)$/, async (ctx) => {
+		try {
+			const jobId = ctx.match[1];
+			const selection = ctx.match[2];
+
+			const job = getCronJob(jobId);
+			if (!job) {
+				await ctx.answerCallbackQuery({ text: "Job not found", show_alert: true });
+				return;
+			}
+
+			let newModel: string | null;
+			let label: string;
+
+			if (selection === "none") {
+				newModel = null;
+				label = "default";
+			} else {
+				const presetIndex = parseInt(selection, 10);
+				const preset = MODEL_PRESETS[presetIndex];
+				if (!preset) {
+					await ctx.answerCallbackQuery({ text: "Invalid model", show_alert: true });
+					return;
+				}
+				newModel = preset.id;
+				label = preset.short;
+			}
+
+			updateCronJob(jobId, { model: newModel });
+
+			await ctx.answerCallbackQuery(`Model → ${label}`);
+			await showCronList(ctx, 0, true);
+		} catch (err) {
+			if (!isMessageNotModifiedError(err)) {
+				console.error("[nzb] Cron set model error:", err instanceof Error ? err.message : err);
+				await ctx
+					.answerCallbackQuery({ text: "Error updating model", show_alert: true })
 					.catch(() => {});
 			}
 		}
