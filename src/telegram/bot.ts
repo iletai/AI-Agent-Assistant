@@ -17,6 +17,7 @@ import { registerMediaHandlers } from "./handlers/media.js";
 import { registerReactionHandlers } from "./handlers/reactions.js";
 import { registerMessageHandler } from "./handlers/streaming.js";
 import { registerSmartSuggestionHandlers } from "./handlers/suggestions.js";
+import { registerUpdateHandlers } from "./handlers/update.js";
 import { initLogChannel, logError, logInfo } from "./log-channel.js";
 import { createMenus } from "./menus.js";
 
@@ -120,6 +121,7 @@ export function createBot(): Bot {
 	// --- Handler registrations ---
 	registerCallbackHandlers(bot);
 	registerCronHandlers(bot);
+	registerUpdateHandlers(bot);
 	registerInlineQueryHandler(bot);
 	registerSmartSuggestionHandlers(bot);
 	registerReactionHandlers(bot);
@@ -176,6 +178,7 @@ export async function startBot(): Promise<void> {
 			{ command: "skills", description: "List installed skills" },
 			{ command: "memory", description: "Show stored memories" },
 			{ command: "cron", description: "Manage cron jobs" },
+			{ command: "update", description: "Check for updates" },
 			{ command: "settings", description: "Bot settings" },
 			{ command: "restart", description: "Restart NZB" },
 		]);

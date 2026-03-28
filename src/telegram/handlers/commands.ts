@@ -53,6 +53,7 @@ export function registerCommandHandlers(
 				"/skills — Installed skills\n" +
 				"/workers — Active worker sessions\n" +
 				"/cron — Manage cron jobs\n" +
+				"/update — Check for updates\n" +
 				"/restart — Restart NZB\n\n" +
 				"⚡ Breakthrough Features:\n" +
 				"• @bot query — Use me inline in any chat!\n" +

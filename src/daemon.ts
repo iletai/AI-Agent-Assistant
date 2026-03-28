@@ -15,7 +15,7 @@ import { PID_FILE_PATH } from "./paths.js";
 import { closeDb, getDb } from "./store/db.js";
 import { createBot, sendProactiveMessage, sendWorkerNotification, startBot, stopBot } from "./telegram/bot.js";
 import { startCronScheduler, stopCronScheduler } from "./cron/scheduler.js";
-import { checkForUpdate } from "./update.js";
+import { checkForUpdate, getDismissedVersion, isAutoUpdateEnabled, scheduleUpdateCheck, shouldCheckUpdate, stopUpdateCheck } from "./update.js";
 
 // Log the active CA bundle (injected by cli.ts via re-exec).
 if (process.env.NODE_EXTRA_CA_CERTS) {
@@ -172,17 +172,55 @@ async function main(): Promise<void> {
 
 	console.log("[nzb] NZB is fully operational.");
 
-	// Non-blocking update check — notify via console + all active channels
-	checkForUpdate()
-		.then(({ updateAvailable, current, latest }) => {
-			if (updateAvailable) {
-				const msg = `⬆ Update available: v${current} → v${latest} — run \`nzb update\` to install`;
+	// Non-blocking update check — delayed 30s after startup, respects check interval
+	setTimeout(async () => {
+		try {
+			const autoEnabled = await isAutoUpdateEnabled();
+			if (!autoEnabled) return;
+			const shouldCheck = await shouldCheckUpdate();
+			if (!shouldCheck) return;
+			const result = await checkForUpdate();
+			if (result.updateAvailable && result.latest) {
+				const dismissed = await getDismissedVersion();
+				if (dismissed === result.latest) return;
+				const msg = `⬆ Update available: v${result.current} → v${result.latest} — run \`nzb update\` to install`;
 				console.log(`[nzb] ${msg}`);
-				if (config.telegramEnabled) sendProactiveMessage(msg).catch(() => {});
+				if (config.telegramEnabled) {
+					try {
+						const { sendUpdateNotification } = await import("./telegram/handlers/update.js");
+						const tgBot = (await import("./telegram/bot.js")).getBot();
+						if (tgBot && config.authorizedUserId !== undefined) {
+							await sendUpdateNotification(tgBot, config.authorizedUserId, result);
+						}
+					} catch {
+						// Fallback to plain text
+						sendProactiveMessage(msg).catch(() => {});
+					}
+				}
 				broadcastToSSE(msg);
 			}
-		})
-		.catch(() => {}); // silent — network may be unavailable
+		} catch {
+			// Silent — network may be unavailable
+		}
+	}, 30_000);
+
+	// Schedule periodic update checks (every 6 hours)
+	scheduleUpdateCheck(async (result) => {
+		const msg = `⬆ Update available: v${result.current} → v${result.latest} — run \`nzb update\` to install`;
+		console.log(`[nzb] ${msg}`);
+		if (config.telegramEnabled) {
+			try {
+				const { sendUpdateNotification } = await import("./telegram/handlers/update.js");
+				const tgBot = (await import("./telegram/bot.js")).getBot();
+				if (tgBot && config.authorizedUserId !== undefined) {
+					await sendUpdateNotification(tgBot, config.authorizedUserId, result);
+				}
+			} catch {
+				sendProactiveMessage(msg).catch(() => {});
+			}
+		}
+		broadcastToSSE(msg);
+	});
 
 	// Notify user if this is a restart (not a fresh start)
 	if (config.telegramEnabled && process.env.NZB_RESTARTED === "1") {
@@ -224,6 +262,7 @@ async function shutdown(): Promise<void> {
 	// Stop health check timer first
 	stopHealthCheck();
 	stopCronScheduler();
+	stopUpdateCheck();
 
 	if (config.telegramEnabled) {
 		try {
@@ -254,6 +293,7 @@ export async function restartDaemon(): Promise<void> {
 
 	stopHealthCheck();
 	stopCronScheduler();
+	stopUpdateCheck();
 
 	const activeWorkers = getWorkers();
 	const runningCount = Array.from(activeWorkers.values()).filter((w) => w.status === "running").length;

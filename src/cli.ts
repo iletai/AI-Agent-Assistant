@@ -50,6 +50,8 @@ Commands:
   tui         Connect to the daemon via terminal UI
   setup       Interactive first-run configuration
   update      Check for updates and install the latest version
+  update check  Check for updates without installing
+  update --force  Force reinstall the latest version
   cron        Manage scheduled cron jobs
   help        Show this help message
 
@@ -85,21 +87,48 @@ switch (command) {
 		await import("./setup.js");
 		break;
 	case "update": {
-		const { checkForUpdate, performUpdate } = await import("./update.js");
+		const { checkForUpdate, performUpdate, performForceUpdate } = await import("./update.js");
+		const updateArgs = args.slice(1);
+		const subCmd = updateArgs[0];
+		const force = updateArgs.includes("--force");
+
+		// `nzb update check` — check only, don't install
+		if (subCmd === "check") {
+			const check = await checkForUpdate();
+			if (!check.checkSucceeded) {
+				console.error("Warning: Could not reach the npm registry. Check your network and try again.");
+				process.exit(1);
+			}
+			if (check.updateAvailable) {
+				console.log(`Update available: v${check.current} → v${check.latest}`);
+				if (check.publishedAt) {
+					console.log(`Published: ${new Date(check.publishedAt).toLocaleDateString()}`);
+				}
+			} else {
+				console.log(`nzb v${check.current} is already the latest version.`);
+			}
+			break;
+		}
+
+		// `nzb update` or `nzb update --force` — check and install
 		const check = await checkForUpdate();
 		if (!check.checkSucceeded) {
 			console.error("Warning: Could not reach the npm registry. Check your network and try again.");
 			process.exit(1);
 		}
-		if (!check.updateAvailable) {
+		if (!check.updateAvailable && !force) {
 			console.log(`nzb v${check.current} is already the latest version.`);
 			break;
 		}
-		console.log(`Update available: v${check.current} → v${check.latest}`);
+		if (check.updateAvailable) {
+			console.log(`Update available: v${check.current} → v${check.latest}`);
+		} else if (force) {
+			console.log(`Force reinstalling nzb v${check.current}...`);
+		}
 		console.log("Installing...");
-		const result = await performUpdate();
+		const result = force ? await performForceUpdate() : await performUpdate();
 		if (result.ok) {
-			console.log(`Updated to v${check.latest}`);
+			console.log(check.updateAvailable ? `Updated to v${check.latest}` : `Reinstalled v${check.current}`);
 		} else {
 			console.error(`Update failed: ${result.output}`);
 			process.exit(1);

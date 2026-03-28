@@ -967,6 +967,59 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				return `Restarting NZB${reason}. I'll be back in a few seconds.`;
 			},
 		}),
+
+		defineTool("check_update", {
+			description:
+				"Check for NZB updates and optionally apply them. " +
+				"Use 'check' to see if updates are available. " +
+				"Use 'update' to install the latest version and restart.",
+			parameters: z.object({
+				action: z.enum(["check", "update"]).describe("'check' to check for updates, 'update' to install and restart"),
+			}),
+			handler: async (args) => {
+				try {
+					const { checkForUpdate, performUpdate, getChangelog } = await import("../update.js");
+
+					if (args.action === "check") {
+						const result = await checkForUpdate();
+						if (!result.checkSucceeded) {
+							return "Could not reach the npm registry. Network may be unavailable.";
+						}
+						if (!result.updateAvailable) {
+							return `NZB v${result.current} is already the latest version.`;
+						}
+						const changelog = await getChangelog(5);
+						const changelogText = changelog.length > 0
+							? "\n\nRecent versions:\n" + changelog.map((e) => `• v${e.version} (${e.date})`).join("\n")
+							: "";
+						return `Update available: v${result.current} → v${result.latest}${changelogText}`;
+					}
+
+					// action === "update"
+					const result = await checkForUpdate();
+					if (!result.checkSucceeded) {
+						return "Could not reach the npm registry. Network may be unavailable.";
+					}
+					if (!result.updateAvailable) {
+						return `NZB v${result.current} is already the latest version. No update needed.`;
+					}
+					const updateResult = await performUpdate();
+					if (!updateResult.ok) {
+						return `Update failed: ${updateResult.output}`;
+					}
+					// Schedule restart after returning the response
+					const { restartDaemon } = await import("../daemon.js");
+					setTimeout(() => {
+						restartDaemon().catch((err) => {
+							console.error("[nzb] Post-update restart failed:", err);
+						});
+					}, 1000);
+					return `Updated NZB to v${result.latest}. Restarting now...`;
+				} catch (err) {
+					return `Update error: ${err instanceof Error ? err.message : String(err)}`;
+				}
+			},
+		}),
 	];
 }
 
