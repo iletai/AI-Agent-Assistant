@@ -264,6 +264,19 @@ export function createMenus(getUptimeStr: () => string) {
 
 	// Main interactive menu with navigation
 	const mainMenu = new Menu("main-menu")
+		.text("⏰ Cron", async (ctx) => {
+			try {
+				await ctx.answerCallbackQuery();
+				const { sendCronMenu } = await import("./handlers/cron.js");
+				await sendCronMenu(ctx);
+			} catch (err) {
+				console.error("[nzb] Menu callback error:", err instanceof Error ? err.message : err);
+				await ctx.answerCallbackQuery({
+					text: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+					show_alert: true,
+				}).catch(() => {});
+			}
+		})
 		.text("📊 Status", async (ctx) => {
 			try {
 				const workers = Array.from(getWorkers().values());

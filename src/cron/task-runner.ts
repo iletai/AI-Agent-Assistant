@@ -42,17 +42,15 @@ async function executePromptTask(payload: Record<string, unknown>): Promise<stri
 	const prompt = (payload.prompt as string) || "Scheduled check-in. Anything to report?";
 	try {
 		const { sendToOrchestrator } = await import("../copilot/orchestrator.js");
-		return await new Promise<string>((resolve, reject) => {
-			const timeout = setTimeout(() => reject(new Error("Prompt task timed out after 120s")), 120_000);
-			let fullResponse = "";
+		// No internal timeout — the scheduler's withTaskTimeout() handles it
+		// using the per-job configurable timeoutMs (default 5min).
+		return await new Promise<string>((resolve) => {
 			sendToOrchestrator(
 				`[Scheduled task] ${prompt}`,
 				{ type: "background" },
 				(text: string, done: boolean) => {
 					if (done) {
-						clearTimeout(timeout);
-						fullResponse = text;
-						resolve(fullResponse);
+						resolve(text);
 					}
 				},
 			);
