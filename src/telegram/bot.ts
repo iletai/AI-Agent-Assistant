@@ -27,6 +27,8 @@ const startedAt = Date.now();
 const INITIAL_POLL_RETRY_DELAY = 5000;
 const MAX_POLL_RETRY_DELAY = 300_000; // 5 minutes
 let pollRetryDelay = INITIAL_POLL_RETRY_DELAY;
+let consecutivePollingFailures = 0;
+const MAX_CONSECUTIVE_POLLING_FAILURES = 10;
 
 // Direct-connection HTTPS agent for Telegram API requests.
 // This bypasses corporate proxy (HTTP_PROXY/HTTPS_PROXY env vars) without
@@ -199,16 +201,25 @@ export async function startBot(): Promise<void> {
 			...(savedOffset ? { offset: savedOffset + 1 } : {}),
 			onStart: () => {
 				console.log("[nzb] Telegram bot connected");
+				consecutivePollingFailures = 0;
 				pollRetryDelay = INITIAL_POLL_RETRY_DELAY;
 				void logInfo(`🚀 NZB v${process.env.npm_package_version || "?"} started (model: ${config.copilotModel})`);
 			},
 		})
 		.catch(async (err: any) => {
+			consecutivePollingFailures++;
+
 			if (err?.error_code === 401) {
 				console.error(
 					"[nzb] Warning: Telegram bot token is invalid or expired. Run 'nzb setup' and re-enter your bot token from @BotFather.",
 				);
 				return; // Unrecoverable — don't retry
+			}
+			if (consecutivePollingFailures >= MAX_CONSECUTIVE_POLLING_FAILURES) {
+				console.error(
+					`[nzb] Telegram polling failed ${consecutivePollingFailures} consecutive times. Stopping retry attempts. Restart NZB to try again.`,
+				);
+				return;
 			}
 			if (err?.error_code === 409) {
 				console.error(

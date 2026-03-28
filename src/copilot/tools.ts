@@ -6,6 +6,7 @@ import { z } from "zod";
 import { config, persistModel } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import { getDb } from "../store/db.js";
+import { withTimeout } from "../utils.js";
 import { addMemory, removeMemory, searchMemories } from "../store/memory.js";
 import { createSkill, listSkills, removeSkill } from "./skills.js";
 import type { TeamInfo, ToolDeps, WorkerEvent, WorkerInfo } from "./types.js";
@@ -134,7 +135,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 						})
 						.finally(() => {
 							// Auto-destroy background workers after completion to free memory (~400MB per worker)
-							session.disconnect().catch(() => {});
+							withTimeout(session.disconnect(), 5_000, `worker '${args.name}' disconnect`).catch((err) => {
+								console.error(`[nzb] Worker '${args.name}' disconnect timeout/error:`, err instanceof Error ? err.message : err);
+							});
 							deps.workers.delete(args.name);
 							try {
 								getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
@@ -195,7 +198,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					})
 					.finally(() => {
 						// Auto-destroy after each send_to_worker dispatch to free memory
-						worker.session.disconnect().catch(() => {});
+						withTimeout(worker.session.disconnect(), 5_000, `worker '${args.name}' disconnect`).catch((err) => {
+							console.error(`[nzb] Worker '${args.name}' disconnect timeout/error:`, err instanceof Error ? err.message : err);
+						});
 						deps.workers.delete(args.name);
 						try {
 							getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(args.name);
@@ -249,9 +254,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					return `No worker named '${args.name}'.`;
 				}
 				try {
-					await worker.session.disconnect();
-				} catch {
-					// Session may already be gone
+					await withTimeout(worker.session.disconnect(), 5_000, `worker '${args.name}' disconnect`);
+				} catch (err) {
+					console.error(`[nzb] Worker '${args.name}' disconnect timeout/error:`, err instanceof Error ? err.message : err);
 				}
 				deps.workers.delete(args.name);
 
@@ -273,7 +278,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 				const worker = deps.workers.get(args.name);
 				if (!worker) return `No worker found with name '${args.name}'.`;
 				try {
-					worker.session.disconnect().catch(() => {});
+					withTimeout(worker.session.disconnect(), 5_000, `worker '${args.name}' disconnect`).catch((err) => {
+						console.error(`[nzb] Worker '${args.name}' disconnect timeout/error:`, err instanceof Error ? err.message : err);
+					});
 				} catch {
 					// Session may already be destroyed
 				}
@@ -406,7 +413,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 								deps.onWorkerComplete(member.name, errMsg);
 							})
 							.finally(() => {
-								session.disconnect().catch(() => {});
+								withTimeout(session.disconnect(), 5_000, `worker '${member.name}' disconnect`).catch((err) => {
+									console.error(`[nzb] Worker '${member.name}' disconnect timeout/error:`, err instanceof Error ? err.message : err);
+								});
 								deps.workers.delete(member.name);
 								try {
 									getDb().prepare(`DELETE FROM worker_sessions WHERE name = ?`).run(member.name);

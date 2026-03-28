@@ -226,6 +226,7 @@ function startHealthCheck(): void {
 	healthCheckTimer = setInterval(async () => {
 		if (!copilotClient) return;
 		if (healthCheckRunning) return;
+		if (processing) return; // Don't interfere while processing messages
 		healthCheckRunning = true;
 		try {
 			const state = copilotClient.getState();
@@ -258,7 +259,7 @@ export function stopHealthCheck(): void {
 /** Periodically kills workers that have exceeded 2× their configured timeout. */
 function startWorkerReaper(): void {
 	if (workerReaperTimer) return;
-	workerReaperTimer = setInterval(() => {
+	workerReaperTimer = setInterval(async () => {
 		const maxAge = config.workerTimeoutMs * 2;
 		const now = Date.now();
 		for (const [name, worker] of workers) {
@@ -267,9 +268,9 @@ function startWorkerReaper(): void {
 					`[nzb] Reaping stuck worker '${name}' (age: ${formatAge(worker.startedAt)})`,
 				);
 				try {
-					worker.session.disconnect().catch(() => {});
-				} catch {
-					// Session may already be destroyed
+					await withTimeout(worker.session.disconnect(), 5_000, `reaper: worker '${name}'`);
+				} catch (err) {
+					console.error(`[nzb] Reaper: worker '${name}' disconnect failed:`, err instanceof Error ? err.message : err);
 				}
 				workers.delete(name);
 				feedBackgroundResult(
@@ -631,7 +632,10 @@ async function processQueue(): Promise<void> {
 
 	// Re-check for messages that arrived during the last executeOnSession call
 	if (messageQueue.length > 0) {
-		void processQueue();
+		processQueue().catch((err) => {
+			console.error("[nzb] processQueue re-check failed:", err instanceof Error ? err.message : err);
+			processing = false;
+		});
 	}
 }
 
@@ -689,6 +693,17 @@ export async function sendToOrchestrator(
 
 	// Enqueue with priority — user messages go before background messages
 	void (async () => {
+		// Safety timeout for entire message processing chain.
+		// Uses a flag to prevent double-callback if timeout fires while processing completes.
+		const GLOBAL_MSG_TIMEOUT_MS = 300_000; // 5 minutes
+		let globalTimedOut = false;
+		const globalTimer = setTimeout(() => {
+			globalTimedOut = true;
+			console.error("[nzb] Global message processing timeout (5 min). Force-failing.");
+			Promise.resolve(callback("Error: Message processing timed out after 5 minutes. Please try again.", true)).catch(() => {});
+		}, GLOBAL_MSG_TIMEOUT_MS);
+
+		try {
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			try {
 				const finalContent = await new Promise<string>((resolve, reject) => {
@@ -735,7 +750,13 @@ export async function sendToOrchestrator(
 				} catch {
 					/* best-effort */
 				}
-				await callback(finalContent, true, { assistantLogId });
+				try {
+					if (!globalTimedOut) {
+						await callback(finalContent, true, { assistantLogId });
+					}
+				} catch (callbackErr) {
+					console.error("[nzb] Callback error after successful response:", callbackErr instanceof Error ? callbackErr.message : callbackErr);
+				}
 
 				// Auto-continue: if the response was cut short by timeout, automatically
 				// send a follow-up "Continue" message so the user doesn't have to
@@ -757,6 +778,9 @@ export async function sendToOrchestrator(
 
 				// Don't retry cancelled messages
 				if (/cancelled|abort/i.test(msg)) {
+					if (!globalTimedOut) {
+						try { await callback("Request was cancelled.", true); } catch { /* best-effort */ }
+					}
 					return;
 				}
 
@@ -788,9 +812,14 @@ export async function sendToOrchestrator(
 				}
 
 				console.error(`[nzb] Error processing message: ${msg}`);
-				await callback(`Error: ${msg}`, true);
+				if (!globalTimedOut) {
+					await callback(`Error: ${msg}`, true);
+				}
 				return;
 			}
+		}
+		} finally {
+			clearTimeout(globalTimer);
 		}
 	})().catch((err) => {
 		console.error(`[nzb] Unhandled error in sendToOrchestrator: ${err instanceof Error ? err.message : String(err)}`);

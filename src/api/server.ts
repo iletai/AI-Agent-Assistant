@@ -86,8 +86,23 @@ app.get("/stream", (req: Request, res: Response) => {
 
 	// Heartbeat to keep connection alive
 	const heartbeat = setInterval(() => {
-		res.write(`:ping\n\n`);
+		if (res.writableEnded || res.closed) {
+			clearInterval(heartbeat);
+			sseClients.delete(connectionId);
+			return;
+		}
+		try {
+			res.write(`:ping\n\n`);
+		} catch {
+			clearInterval(heartbeat);
+			sseClients.delete(connectionId);
+		}
 	}, 20_000);
+
+	res.on("error", () => {
+		clearInterval(heartbeat);
+		sseClients.delete(connectionId);
+	});
 
 	req.on("close", () => {
 		clearInterval(heartbeat);
@@ -216,6 +231,14 @@ app.post("/send-photo", async (req: Request, res: Response) => {
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		res.status(500).json({ error: msg });
+	}
+});
+
+// Global error handler — catch unhandled Express errors
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+	console.error("[nzb] Express error:", err.message);
+	if (!res.headersSent) {
+		res.status(500).json({ error: "Internal server error" });
 	}
 });
 
