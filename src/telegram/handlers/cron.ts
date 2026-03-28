@@ -13,6 +13,31 @@ import { isMessageNotModifiedError } from "../formatter.js";
 
 const JOBS_PER_PAGE = 5;
 
+// ── Schedule presets ─────────────────────────────────────────────────
+
+const SCHEDULE_PRESETS = [
+	{ label: "Every 1 min", cron: "* * * * *" },
+	{ label: "Every 5 min", cron: "*/5 * * * *" },
+	{ label: "Every 15 min", cron: "*/15 * * * *" },
+	{ label: "Every 30 min", cron: "*/30 * * * *" },
+	{ label: "Every 1 hour", cron: "0 * * * *" },
+	{ label: "Every 6 hours", cron: "0 */6 * * *" },
+	{ label: "Every day at 8AM", cron: "0 8 * * *" },
+] as const;
+
+// In-memory state for users awaiting custom cron expression input
+const pendingCustomSchedule = new Map<number, string>();
+
+/** Check if a user is awaiting custom cron input and return the job ID. */
+export function getPendingCustomScheduleJobId(userId: number): string | undefined {
+	return pendingCustomSchedule.get(userId);
+}
+
+/** Clear pending custom schedule state for a user. */
+export function clearPendingCustomSchedule(userId: number): void {
+	pendingCustomSchedule.delete(userId);
+}
+
 // ── Keyboard builders ────────────────────────────────────────────────
 
 function buildCronMainMenu(): InlineKeyboard {
@@ -31,6 +56,7 @@ function buildJobListKeyboard(jobs: CronJob[], page: number, totalPages: number)
 	for (const job of pageJobs) {
 		const toggleLabel = job.enabled ? "⏸" : "▶️";
 		kb.text(`${toggleLabel} ${job.name}`, `cron:toggle:${job.id}`)
+			.text("⏱", `cron:schedule:${job.id}`)
 			.text("▶ Run", `cron:trigger:${job.id}`)
 			.text("📊", `cron:history:${job.id}`)
 			.text("🗑", `cron:delete:${job.id}`)
@@ -45,6 +71,32 @@ function buildJobListKeyboard(jobs: CronJob[], page: number, totalPages: number)
 
 	kb.text("🔙 Back", "cron:back");
 	return kb;
+}
+
+function buildScheduleKeyboard(jobId: string): InlineKeyboard {
+	const kb = new InlineKeyboard();
+	for (let i = 0; i < SCHEDULE_PRESETS.length; i++) {
+		const preset = SCHEDULE_PRESETS[i];
+		kb.text(`${preset.label}`, `cron:setsched:${jobId}:${i}`).row();
+	}
+	kb.text("✏️ Custom", `cron:customsched:${jobId}`).row();
+	kb.text("🔙 Back to list", "cron:list");
+	return kb;
+}
+
+/** Apply a schedule change: update DB and reschedule. */
+function applyScheduleChange(jobId: string, cronExpression: string): { job: CronJob; rescheduled: boolean } {
+	const updated = updateCronJob(jobId, { cronExpression });
+	if (!updated) throw new Error("Job not found");
+
+	let rescheduled = false;
+	if (updated.enabled) {
+		unscheduleJob(jobId);
+		scheduleJob(updated);
+		rescheduled = true;
+	}
+
+	return { job: updated, rescheduled };
 }
 
 // ── Text formatters ──────────────────────────────────────────────────
@@ -385,6 +437,107 @@ export function registerCronHandlers(bot: Bot): void {
 		}
 	});
 
+	// Schedule change — show preset options for a job
+	bot.callbackQuery(/^cron:schedule:(.+)$/, async (ctx) => {
+		try {
+			const jobId = ctx.match[1];
+			const job = getCronJob(jobId);
+			if (!job) {
+				await ctx.answerCallbackQuery({ text: "Job not found", show_alert: true });
+				return;
+			}
+
+			const text =
+				`⏱ Change Schedule: ${job.name}\n\n` +
+				`Current: ${job.cronExpression}\n\n` +
+				"Select a preset or enter a custom expression:";
+
+			await ctx.answerCallbackQuery();
+			await ctx.editMessageText(text, {
+				reply_markup: buildScheduleKeyboard(job.id),
+			});
+		} catch (err) {
+			if (!isMessageNotModifiedError(err)) {
+				console.error("[nzb] Cron schedule menu error:", err instanceof Error ? err.message : err);
+				await ctx
+					.answerCallbackQuery({ text: "Error loading schedule options", show_alert: true })
+					.catch(() => {});
+			}
+		}
+	});
+
+	// Set schedule from preset
+	bot.callbackQuery(/^cron:setsched:(.+):(\d+)$/, async (ctx) => {
+		try {
+			const jobId = ctx.match[1];
+			const presetIndex = parseInt(ctx.match[2], 10);
+			const preset = SCHEDULE_PRESETS[presetIndex];
+
+			if (!preset) {
+				await ctx.answerCallbackQuery({ text: "Invalid preset", show_alert: true });
+				return;
+			}
+
+			const job = getCronJob(jobId);
+			if (!job) {
+				await ctx.answerCallbackQuery({ text: "Job not found", show_alert: true });
+				return;
+			}
+
+			const { rescheduled } = applyScheduleChange(jobId, preset.cron);
+			const statusNote = rescheduled ? " (rescheduled)" : "";
+
+			await ctx.answerCallbackQuery(`Schedule → ${preset.cron}${statusNote}`);
+			await showCronList(ctx, 0, true);
+		} catch (err) {
+			if (!isMessageNotModifiedError(err)) {
+				console.error("[nzb] Cron set schedule error:", err instanceof Error ? err.message : err);
+				await ctx
+					.answerCallbackQuery({ text: "Error updating schedule", show_alert: true })
+					.catch(() => {});
+			}
+		}
+	});
+
+	// Custom schedule — prompt user to type cron expression
+	bot.callbackQuery(/^cron:customsched:(.+)$/, async (ctx) => {
+		try {
+			const jobId = ctx.match[1];
+			const job = getCronJob(jobId);
+			if (!job) {
+				await ctx.answerCallbackQuery({ text: "Job not found", show_alert: true });
+				return;
+			}
+
+			const userId = ctx.from?.id;
+			if (userId) {
+				pendingCustomSchedule.set(userId, jobId);
+			}
+
+			await ctx.answerCallbackQuery();
+			await ctx.editMessageText(
+				`✏️ Custom Schedule: ${job.name}\n\n` +
+					`Current: ${job.cronExpression}\n\n` +
+					"Type your cron expression in the chat.\n\n" +
+					"Examples:\n" +
+					"• 0 9 * * MON-FRI — weekdays at 9AM\n" +
+					"• */10 * * * * — every 10 minutes\n" +
+					"• 0 0 1 * * — first day of month\n" +
+					"• 30 14 * * * — daily at 2:30PM",
+				{
+					reply_markup: new InlineKeyboard().text("❌ Cancel", "cron:list"),
+				},
+			);
+		} catch (err) {
+			if (!isMessageNotModifiedError(err)) {
+				console.error("[nzb] Cron custom schedule error:", err instanceof Error ? err.message : err);
+				await ctx
+					.answerCallbackQuery({ text: "Error", show_alert: true })
+					.catch(() => {});
+			}
+		}
+	});
+
 	// Back to main cron menu
 	bot.callbackQuery("cron:back", async (ctx) => {
 		try {
@@ -394,6 +547,56 @@ export function registerCronHandlers(bot: Bot): void {
 			if (!isMessageNotModifiedError(err)) {
 				console.error("[nzb] Cron back error:", err instanceof Error ? err.message : err);
 			}
+		}
+	});
+
+	// Intercept text messages when a user is in "custom cron schedule" mode.
+	// Must be registered before the main streaming handler so it can short-circuit.
+	bot.on("message:text", async (ctx, next) => {
+		const userId = ctx.from?.id;
+		if (!userId) return next();
+
+		const jobId = pendingCustomSchedule.get(userId);
+		if (!jobId) return next();
+
+		// Clear pending state immediately so subsequent messages go to the AI
+		pendingCustomSchedule.delete(userId);
+
+		const cronExpr = ctx.message.text.trim();
+		if (!cronExpr) {
+			await ctx.reply("❌ Empty expression. Schedule not changed.", {
+				reply_markup: new InlineKeyboard().text("🔙 Back to list", "cron:list"),
+			});
+			return;
+		}
+
+		const job = getCronJob(jobId);
+		if (!job) {
+			await ctx.reply("❌ Job no longer exists.");
+			return;
+		}
+
+		try {
+			const { job: updated, rescheduled } = applyScheduleChange(jobId, cronExpr);
+			const statusNote = rescheduled ? " and rescheduled" : "";
+			await ctx.reply(
+				`✅ Schedule updated${statusNote}!\n\n` +
+					`📋 ${updated.name}\n` +
+					`⏰ ${updated.cronExpression}`,
+				{
+					reply_markup: new InlineKeyboard().text("📋 Back to list", "cron:list"),
+				},
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			await ctx.reply(
+				`❌ Invalid cron expression: ${cronExpr}\n\n${msg}\n\nTry again or tap Cancel.`,
+				{
+					reply_markup: new InlineKeyboard()
+						.text("🔄 Retry", `cron:customsched:${jobId}`)
+						.text("❌ Cancel", "cron:list"),
+				},
+			);
 		}
 	});
 }
