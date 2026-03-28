@@ -960,3 +960,23 @@ export async function compactSession(): Promise<string> {
 export function getFailoverManager(): ModelFailoverManager | undefined {
 	return failoverManager;
 }
+
+/** Run a one-off prompt on a temporary session with a specific model. Session is destroyed after use. */
+export async function runOneOffPrompt(prompt: string, model: string, timeoutMs = 300_000): Promise<string> {
+	const client = await ensureClient();
+	const session = await client.createSession({
+		model,
+		configDir: SESSIONS_DIR,
+		onPermissionRequest: approveAll,
+	});
+	try {
+		const result = await session.sendAndWait({ prompt }, timeoutMs);
+		return result?.data?.content || "";
+	} finally {
+		try {
+			await session.disconnect();
+		} catch {
+			// Best-effort cleanup
+		}
+	}
+}

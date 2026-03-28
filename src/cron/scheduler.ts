@@ -83,6 +83,7 @@ export function getSchedulerStatus(): Array<{
 	enabled: boolean;
 	active: boolean;
 	nextRun: string | null;
+	model: string | null;
 }> {
 	const allJobs = listCronJobs();
 	return allJobs.map((job) => {
@@ -96,6 +97,7 @@ export function getSchedulerStatus(): Array<{
 			enabled: job.enabled,
 			active: activeTimers.has(job.id),
 			nextRun,
+			model: job.model,
 		};
 	});
 }

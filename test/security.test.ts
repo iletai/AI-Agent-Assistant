@@ -129,15 +129,20 @@ describe("isInternalUrl — tested via sendPhoto", () => {
 
 describe("sendPhoto — path traversal protection", () => {
 	// Test the isAllowedFilePath logic directly — matching the implementation in bot.ts
-	// The function resolves the path and checks it's within allowed directories.
+	// The function resolves both the file path AND allowed dirs to handle symlinks (e.g. macOS /tmp → /private/tmp).
 
 	function isAllowedFilePath(filePath: string, realpathFn: (p: string) => string): boolean {
 		try {
 			const { resolve: pathResolve } = require("path");
 			const { tmpdir } = require("os");
 			const resolved = realpathFn(pathResolve(filePath));
-			const allowedDirs = [tmpdir(), "/tmp"];
-			return allowedDirs.some((dir: string) => resolved.startsWith(dir));
+			const rawDirs = [tmpdir(), "/tmp"];
+			const resolvedDirs = new Set<string>();
+			for (const dir of rawDirs) {
+				resolvedDirs.add(dir);
+				try { resolvedDirs.add(realpathFn(dir)); } catch { /* keep original */ }
+			}
+			return [...resolvedDirs].some((dir: string) => resolved.startsWith(dir));
 		} catch {
 			return false;
 		}

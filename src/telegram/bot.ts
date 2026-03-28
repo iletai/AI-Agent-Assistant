@@ -304,11 +304,25 @@ function isInternalUrl(urlStr: string): boolean {
 /** Allowlisted directories for local file photo access. */
 const PHOTO_ALLOWED_DIRS = [tmpdir(), "/tmp"];
 
+/** Resolve allowed dirs at startup so symlinks are handled (e.g. macOS /tmp → /private/tmp). */
+const RESOLVED_ALLOWED_DIRS: string[] = (() => {
+	const resolved = new Set<string>();
+	for (const dir of PHOTO_ALLOWED_DIRS) {
+		resolved.add(dir);
+		try {
+			resolved.add(realpathSync(dir));
+		} catch {
+			// Directory may not exist — keep the original
+		}
+	}
+	return [...resolved];
+})();
+
 /** Validate a local file path is within allowed directories. */
 function isAllowedFilePath(filePath: string): boolean {
 	try {
 		const resolved = realpathSync(pathResolve(filePath));
-		return PHOTO_ALLOWED_DIRS.some((dir) => resolved.startsWith(dir));
+		return RESOLVED_ALLOWED_DIRS.some((dir) => resolved.startsWith(dir));
 	} catch {
 		// Expected: file may not exist or path may be inaccessible
 		return false;

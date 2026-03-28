@@ -129,6 +129,13 @@ db.exec(`
 
 	db.exec(`CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id, started_at)`);
 
+// Migrate: add model column to cron_jobs if missing
+try {
+	db.prepare(`SELECT model FROM cron_jobs LIMIT 1`).get();
+} catch {
+	db.exec(`ALTER TABLE cron_jobs ADD COLUMN model TEXT`);
+}
+
 // Migrate: if the table already existed with a stricter CHECK, recreate it
 try {
 db.prepare(

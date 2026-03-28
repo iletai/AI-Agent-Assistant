@@ -25,7 +25,7 @@ export async function executeCronTask(job: CronJob): Promise<string> {
 
 	switch (job.taskType) {
 		case "prompt":
-			return await executePromptTask(payload);
+			return await executePromptTask(payload, job.model);
 		case "health_check":
 			return await executeHealthCheckTask();
 		case "backup":
@@ -41,9 +41,15 @@ export async function executeCronTask(job: CronJob): Promise<string> {
 	}
 }
 
-async function executePromptTask(payload: Record<string, unknown>): Promise<string> {
+async function executePromptTask(payload: Record<string, unknown>, model?: string | null): Promise<string> {
 	const prompt = (payload.prompt as string) || "Scheduled check-in. Anything to report?";
 	try {
+		// Use a lightweight one-off session if a specific model is configured
+		if (model) {
+			const { runOneOffPrompt } = await import("../copilot/orchestrator.js");
+			return await runOneOffPrompt(`[Scheduled task] ${prompt}`, model);
+		}
+
 		const { sendToOrchestrator } = await import("../copilot/orchestrator.js");
 		// No internal timeout — the scheduler's withTaskTimeout() handles it
 		// using the per-job configurable timeoutMs (default 5min).
@@ -196,16 +202,22 @@ async function executeVocabTask(job: CronJob, payload: Record<string, unknown>):
 	// Step 1: Get vocab from AI
 	let aiResponse: string;
 	try {
-		const { sendToOrchestrator } = await import("../copilot/orchestrator.js");
-		aiResponse = await new Promise<string>((resolve) => {
-			sendToOrchestrator(
-				`[Scheduled vocab task] ${prompt}`,
-				{ type: "background" },
-				(text: string, done: boolean) => {
-					if (done) resolve(text);
-				},
-			);
-		});
+		// Use a lightweight one-off session if a specific model is configured
+		if (job.model) {
+			const { runOneOffPrompt } = await import("../copilot/orchestrator.js");
+			aiResponse = await runOneOffPrompt(`[Scheduled vocab task] ${prompt}`, job.model);
+		} else {
+			const { sendToOrchestrator } = await import("../copilot/orchestrator.js");
+			aiResponse = await new Promise<string>((resolve) => {
+				sendToOrchestrator(
+					`[Scheduled vocab task] ${prompt}`,
+					{ type: "background" },
+					(text: string, done: boolean) => {
+						if (done) resolve(text);
+					},
+				);
+			});
+		}
 	} catch (err: unknown) {
 		throw new Error(`Vocab AI prompt failed: ${err instanceof Error ? err.message : String(err)}`);
 	}

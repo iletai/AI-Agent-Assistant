@@ -13,6 +13,7 @@ export interface CronJob {
 	notifyTelegram: boolean;
 	maxRetries: number;
 	timeoutMs: number;
+	model: string | null;
 	lastRunAt: string | null;
 	nextRunAt: string | null;
 	createdAt: string;
@@ -40,14 +41,15 @@ export interface CreateCronJobInput {
 	notifyTelegram?: boolean;
 	maxRetries?: number;
 	timeoutMs?: number;
+	model?: string;
 }
 
 export function createCronJob(input: CreateCronJobInput): CronJob {
 	const db = getDb();
 	const now = new Date().toISOString();
 	db.prepare(
-		`INSERT INTO cron_jobs (id, name, cron_expression, task_type, payload, enabled, notify_telegram, max_retries, timeout_ms, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cron_jobs (id, name, cron_expression, task_type, payload, enabled, notify_telegram, max_retries, timeout_ms, model, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
 		input.id,
 		input.name,
@@ -58,6 +60,7 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
 		input.notifyTelegram !== false ? 1 : 0,
 		input.maxRetries ?? 0,
 		input.timeoutMs ?? 300_000,
+		input.model ?? null,
 		now,
 		now,
 	);
@@ -116,6 +119,10 @@ export function updateCronJob(id: string, updates: Partial<Omit<CronJob, "id" | 
 	if (updates.timeoutMs !== undefined) {
 		fields.push("timeout_ms = ?");
 		values.push(updates.timeoutMs);
+	}
+	if (updates.model !== undefined) {
+		fields.push("model = ?");
+		values.push(updates.model);
 	}
 	if (updates.lastRunAt !== undefined) {
 		fields.push("last_run_at = ?");
@@ -201,6 +208,7 @@ function mapCronJobRow(row: Record<string, unknown>): CronJob {
 		notifyTelegram: (row.notify_telegram as number) === 1,
 		maxRetries: row.max_retries as number,
 		timeoutMs: row.timeout_ms as number,
+		model: (row.model as string | null) ?? null,
 		lastRunAt: row.last_run_at as string | null,
 		nextRunAt: row.next_run_at as string | null,
 		createdAt: row.created_at as string,

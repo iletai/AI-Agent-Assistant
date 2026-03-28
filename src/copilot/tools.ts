@@ -865,6 +865,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 					.describe("Task type (required for add)"),
 				payload: z.string().optional().describe("JSON payload for the task (optional for add)"),
 				notify_telegram: z.boolean().optional().describe("Send result to Telegram (default: true)"),
+				model: z.string().optional().describe("AI model to use for prompt/vocab tasks (e.g. 'claude-haiku-4.5'). If not set, uses the default orchestrator model."),
 			}),
 			handler: async (args) => {
 				try {
@@ -876,6 +877,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 								(j) =>
 									`• ${j.id} — ${j.name} [${j.taskType}] ${j.enabled ? "✅" : "⏸️"} ` +
 									`${j.active ? "active" : "inactive"} | ${j.cronExpression}` +
+									(j.model ? ` | model: ${j.model}` : "") +
 									(j.nextRun ? ` | next: ${j.nextRun}` : ""),
 							);
 							return `${status.length} cron job(s):\n${lines.join("\n")}`;
@@ -891,9 +893,11 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 								taskType: args.task_type,
 								payload: args.payload,
 								notifyTelegram: args.notify_telegram,
+								model: args.model,
 							});
 							if (job.enabled) scheduleJob(job);
-							return `Cron job '${job.id}' (${job.name}) created and scheduled: ${job.cronExpression}`;
+							return `Cron job '${job.id}' (${job.name}) created and scheduled: ${job.cronExpression}` +
+								(job.model ? ` [model: ${job.model}]` : "");
 						}
 						case "remove": {
 							if (!args.job_id) return "Missing job_id";
