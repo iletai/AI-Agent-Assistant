@@ -297,7 +297,8 @@ async function generateAndSendVocabAudio(word: string): Promise<void> {
 	try { unlinkSync(m4aPath); } catch { /* ignore */ }
 
 	// Generate TTS with macOS say
-	execSync(`say -v Samantha -o "${aiffPath}" "${word.replace(/"/g, '\\"')}"`, {
+	const safeWord = word.replace(/["`$\\]/g, "");
+	execSync(`say -v Samantha -o "${aiffPath}" "${safeWord}"`, {
 		timeout: 10_000,
 	});
 
@@ -314,13 +315,21 @@ async function generateAndSendVocabAudio(word: string): Promise<void> {
 		throw new Error("Audio conversion failed: m4a file not created");
 	}
 
+	// Resolve symlink path (macOS /tmp → /private/tmp) for grammy InputFile
+	const { realpathSync: realpath } = await import("fs");
+	const resolvedPath = realpath(m4aPath);
+
+	console.log(`[nzb] Vocab TTS: sending voice for "${word}" (${resolvedPath}, ${statSync(resolvedPath).size} bytes)`);
+
 	// Send voice via Telegram
 	const { sendVoice } = await import("../telegram/bot.js");
-	await sendVoice(m4aPath, `🔊 ${word}`);
+	await sendVoice(resolvedPath, `🔊 ${word}`);
+
+	console.log(`[nzb] Vocab TTS: voice sent successfully for "${word}"`);
 
 	// Clean up temp files
 	try { unlinkSync(aiffPath); } catch { /* ignore */ }
-	try { unlinkSync(m4aPath); } catch { /* ignore */ }
+	try { unlinkSync(resolvedPath); } catch { /* ignore */ }
 }
 
 function formatBytes(bytes: number): string {
