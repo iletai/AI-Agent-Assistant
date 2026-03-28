@@ -140,8 +140,8 @@ async function runJob(jobId: string): Promise<string> {
 			}
 
 			console.log(`[nzb] Cron job '${job.id}' completed in ${finishedAt.getTime() - startedAt.getTime()}ms`);
-			// Vocab tasks handle their own Telegram notifications (text + voice)
-			if (job.taskType !== "vocab") {
+			// Vocab and research tasks handle their own Telegram notifications
+			if (job.taskType !== "vocab" && job.taskType !== "research") {
 				await notifyResult(job, `✅ Completed\n${result}`);
 			}
 			return result;

@@ -5,6 +5,7 @@ import { join } from "path";
 import { config } from "../config.js";
 import { DB_PATH, NZB_HOME } from "../paths.js";
 import type { CronJob } from "../store/cron-store.js";
+import { executeResearchTask } from "./research-runner.js";
 
 const BACKUPS_DIR = join(NZB_HOME, "backups");
 
@@ -36,6 +37,8 @@ export async function executeCronTask(job: CronJob): Promise<string> {
 			return await executeWebhookTask(payload, job.timeoutMs);
 		case "vocab":
 			return await executeVocabTask(job, payload);
+		case "research":
+			return await executeResearchTask(job, payload);
 		default:
 			throw new Error(`Unknown task type: ${job.taskType}`);
 	}
