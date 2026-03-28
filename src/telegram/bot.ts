@@ -344,3 +344,30 @@ export async function sendPhoto(photo: string, caption?: string): Promise<void> 
 		throw err;
 	}
 }
+
+/** Send a voice/audio file to the authorized user (or a specific chat). Accepts a local file path. */
+export async function sendVoice(filePath: string, caption?: string, chatId?: number): Promise<void> {
+	if (!bot || config.authorizedUserId === undefined) return;
+
+	const targetChat = chatId ?? config.authorizedUserId;
+
+	if (!isAllowedFilePath(filePath)) {
+		throw new Error("File path is not within allowed directories");
+	}
+
+	const { InputFile } = await import("grammy");
+	const input = new InputFile(filePath);
+
+	try {
+		// Use sendAudio for .m4a (shows as playable audio with duration),
+		// sendVoice for .ogg (shows as voice message bubble)
+		if (filePath.endsWith(".ogg")) {
+			await bot.api.sendVoice(targetChat, input, { caption });
+		} else {
+			await bot.api.sendAudio(targetChat, input, { caption });
+		}
+	} catch (err) {
+		console.error("[nzb] Failed to send voice:", err instanceof Error ? err.message : err);
+		throw err;
+	}
+}

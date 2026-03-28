@@ -8,6 +8,7 @@ import { listSkills, removeSkill } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
 import { API_TOKEN_PATH, ensureNZBHome } from "../paths.js";
 import { searchMemories } from "../store/memory.js";
+import { sendVoice } from "../telegram/bot.js";
 import { sendPhoto } from "../telegram/bot.js";
 
 // Ensure token file exists (generate on first run)
@@ -227,6 +228,36 @@ app.post("/send-photo", async (req: Request, res: Response) => {
 
 	try {
 		await sendPhoto(photo, caption);
+		res.json({ status: "sent" });
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		res.status(500).json({ error: msg });
+	}
+});
+
+// Send a voice/audio file to Telegram (protected by bearer token auth middleware)
+app.post("/send-voice", async (req: Request, res: Response) => {
+	const { voice, caption, chat_id } = req.body as { voice?: string; caption?: string; chat_id?: string };
+
+	if (!voice || typeof voice !== "string") {
+		res.status(400).json({ error: "Missing 'voice' (file path) in request body" });
+		return;
+	}
+
+	// Only allow local file paths (no URLs for voice)
+	if (voice.startsWith("http://") || voice.startsWith("https://")) {
+		res.status(400).json({ error: "Only local file paths are allowed for voice" });
+		return;
+	}
+
+	const chatId = chat_id ? parseInt(chat_id, 10) : undefined;
+	if (chat_id && (isNaN(chatId!) || chatId === 0)) {
+		res.status(400).json({ error: "Invalid 'chat_id'" });
+		return;
+	}
+
+	try {
+		await sendVoice(voice, caption, chatId);
 		res.json({ status: "sent" });
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

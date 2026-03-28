@@ -1,6 +1,6 @@
 import { getDb } from "./db.js";
 
-export type CronTaskType = "prompt" | "health_check" | "backup" | "notification" | "webhook";
+export type CronTaskType = "prompt" | "health_check" | "backup" | "notification" | "webhook" | "vocab";
 export type CronRunStatus = "running" | "success" | "error" | "timeout";
 
 export interface CronJob {
