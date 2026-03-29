@@ -11,11 +11,15 @@ import {
 	setWorkerNotify,
 	stopHealthCheck,
 } from "./copilot/orchestrator.js";
+import { closeDaemonLogger, initDaemonLogger } from "./logger.js";
 import { PID_FILE_PATH } from "./paths.js";
 import { closeDb, getDb } from "./store/db.js";
 import { createBot, sendProactiveMessage, sendWorkerNotification, startBot, stopBot } from "./telegram/bot.js";
 import { startCronScheduler, stopCronScheduler } from "./cron/scheduler.js";
 import { checkForUpdate, getDismissedVersion, isAutoUpdateEnabled, scheduleUpdateCheck, shouldCheckUpdate, stopUpdateCheck } from "./update.js";
+
+// Initialize file logging before anything else
+initDaemonLogger();
 
 // Log the active CA bundle (injected by cli.ts via re-exec).
 if (process.env.NODE_EXTRA_CA_CERTS) {
@@ -284,6 +288,7 @@ async function shutdown(): Promise<void> {
 	closeDb();
 	releasePidLock();
 	console.log("[nzb] Goodbye.");
+	closeDaemonLogger();
 	process.exit(0);
 }
 
@@ -321,6 +326,7 @@ export async function restartDaemon(): Promise<void> {
 	}
 	closeDb();
 	releasePidLock();
+	closeDaemonLogger();
 
 	// Spawn a detached replacement process with the same args (include execArgv for tsx/loaders)
 	const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {

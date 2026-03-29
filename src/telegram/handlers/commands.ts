@@ -11,8 +11,9 @@ import {
 import { listSkills } from "../../copilot/skills.js";
 import type { WorkerInfo } from "../../copilot/tools.js";
 import { restartDaemon } from "../../daemon.js";
+import { tailDaemonLog } from "../../logger.js";
 import { searchMemories } from "../../store/memory.js";
-import { chunkMessage } from "../formatter.js";
+import { chunkMessage, escapeHtml } from "../formatter.js";
 import { buildSettingsText, formatMemoryList } from "../menus.js";
 import { sendCronMenu } from "./cron.js";
 import { getReactionHelpText } from "./reactions.js";
@@ -52,6 +53,7 @@ export function registerCommandHandlers(
 				"/memory — Stored memories\n" +
 				"/skills — Installed skills\n" +
 				"/workers — Active worker sessions\n" +
+				"/logs [N] — Tail daemon log (last N lines)\n" +
 				"/cron — Manage cron jobs\n" +
 				"/update — Check for updates\n" +
 				"/restart — Restart NZB\n\n" +
@@ -206,6 +208,23 @@ export function registerCommandHandlers(
 				console.error("[nzb] Restart failed:", err);
 			});
 		}, 500);
+	});
+
+	bot.command("logs", async (ctx) => {
+		const arg = ctx.match?.trim();
+		const lineCount = arg ? parseInt(arg, 10) : 50;
+		const count = Number.isNaN(lineCount) || lineCount < 1 ? 50 : Math.min(lineCount, 200);
+		const lines = tailDaemonLog(count);
+		if (!lines) {
+			await ctx.reply("No daemon log found.");
+			return;
+		}
+		const header = `📋 Last ${count} log lines:`;
+		const text = `${header}\n\n<pre>${escapeHtml(lines)}</pre>`;
+		const chunks = chunkMessage(text);
+		for (const chunk of chunks) {
+			await ctx.reply(chunk, { parse_mode: "HTML" });
+		}
 	});
 
 	bot.command("settings", async (ctx) => {

@@ -29,6 +29,9 @@ export const API_TOKEN_PATH = join(NZB_HOME, "api-token");
 /** Path to the PID lock file for single-instance enforcement */
 export const PID_FILE_PATH = join(NZB_HOME, "nzb.pid");
 
+/** Path to the daemon console log file */
+export const DAEMON_LOG_PATH = join(NZB_HOME, "daemon.log");
+
 /** Ensure ~/.nzb/ exists */
 export function ensureNZBHome(): void {
 	mkdirSync(NZB_HOME, { recursive: true });
